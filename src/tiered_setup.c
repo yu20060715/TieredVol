@@ -481,6 +481,21 @@ static int cmd_create(int argc, char *argv[]) {
         return 1;
     }
 
+    {
+        const char *ok_fs[] = {"ext4","ext3","xfs","btrfs","none",NULL};
+        int valid = 0;
+        for (int fi = 0; ok_fs[fi]; fi++) if (strcmp(fs, ok_fs[fi]) == 0) valid = 1;
+        if (!valid) {
+            fprintf(stderr, "Error: invalid filesystem '%s' (ext4/ext3/xfs/btrfs/none)\n", fs);
+            return 1;
+        }
+    }
+
+    if (mount_point && mount_point[0] && mount_point[0] != '/') {
+        fprintf(stderr, "Error: mount point must start with /\n");
+        return 1;
+    }
+
     disk_t disks_arr[MAX_DISKS];
     int nd = 0;
     char buf[1024];

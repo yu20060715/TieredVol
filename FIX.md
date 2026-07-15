@@ -24,3 +24,8 @@
 **File:** `src/tiered_ui.c:164-165`
 **Problem:** CLI outputs "1.0T" for ≥1024GB disks, but `atoll(p)` stops at the decimal point, returning 1 instead of 1024.
 **Fix:** After atoll, check for 'T' suffix and multiply by 1024. Handle "1.0T" style by also parsing the decimal part.
+
+## Bug 6 (HIGH): CLI `--fs` and `--mount` not validated
+**File:** `src/tiered_setup.c:479-482`
+**Problem:** `--fs` is passed directly to `mkfs.%s` without validation. `--fs ext4;rm -rf /` executes `rm -rf /` as a shell command. `--fs ntfs` also accepted.
+**Fix:** Added whitelist check for `--fs` (ext4/ext3/xfs/btrfs/none) and mount point must start with `/`.
