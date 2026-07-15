@@ -1,0 +1,18 @@
+# Compiled binaries
+tiered_setup
+tiered_ui
+
+# Object files
+*.o
+*.a
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
