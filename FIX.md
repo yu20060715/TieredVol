@@ -29,3 +29,8 @@
 **File:** `src/tiered_setup.c:479-482`
 **Problem:** `--fs` is passed directly to `mkfs.%s` without validation. `--fs ext4;rm -rf /` executes `rm -rf /` as a shell command. `--fs ntfs` also accepted.
 **Fix:** Added whitelist check for `--fs` (ext4/ext3/xfs/btrfs/none) and mount point must start with `/`.
+
+## Bug 7 (CRITICAL): `parse_bench_output()` format mismatch between sequential and parallel
+**File:** `src/tiered_ui.c:201-211`
+**Problem:** CLI sequential outputs `Write: 263` (colon), parallel outputs `Write 263` (space, no colon). The parser searched for `"Write:"` which never matches parallel output — TUI could never parse parallel bench speeds.
+**Fix:** Search for `"Write"` and `"Read"` (without colon), skip both `:` and space when advancing.

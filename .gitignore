@@ -1,6 +1,7 @@
 # Compiled binaries
 tiered_setup
 tiered_ui
+tests/test_tui
 
 # Object files
 *.o

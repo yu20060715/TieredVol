@@ -198,16 +198,16 @@ static void parse_bench_output(const char *out, ui_disk_t *d) {
     if (!line) return;
     char *eol = strchr(line, '\n');
     int line_len = eol ? (int)(eol - line) : (int)strlen(line);
-    char *w = strstr(line, "Write:");
+    char *w = strstr(line, "Write");
     if (w && (int)(w - line) < line_len) {
-        w += 6;
-        while (*w == ' ') w++;
+        w += 5;
+        while (*w == ' ' || *w == ':') w++;
         d->speed_write = atof(w);
     }
-    char *r = strstr(line, "Read:");
+    char *r = strstr(line, "Read");
     if (r && (int)(r - line) < line_len) {
-        r += 5;
-        while (*r == ' ') r++;
+        r += 4;
+        while (*r == ' ' || *r == ':') r++;
         d->speed_read = atof(r);
     }
 }
