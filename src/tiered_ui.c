@@ -10,11 +10,12 @@
 #include <fcntl.h>
 #include <time.h>
 #include "tiered_common.h"
+#include "version.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#pragma GCC diagnostic ignored "-Wstringop-truncation"
 
-#define VERSION "1.2.0"
 #define MAX_DISKS 8
 #define MIN_COLS 80
 #define MIN_ROWS 20
@@ -48,6 +49,9 @@ static time_t bench_start_time = 0;
 
 static double saved_speed_w[MAX_DISKS], saved_speed_r[MAX_DISKS];
 
+static int system_dirty_ratio = -1;
+static int system_dirty_bg_ratio = -1;
+
 static void detect_tool_path() {
     char *base = getenv("TIERED_VOL_DIR");
     if (base && base[0]) {
@@ -78,10 +82,12 @@ static void detect_existing_volume() {
         if (strstr(line, "tv_")) {
             char vg[128] = "";
             if (sscanf(line, "%127s", vg) == 1) {
-                char *underscore = strchr(vg, '-');
-                if (underscore) *underscore = 0;
-                if (strncmp(vg, "tv_vg_", 6) == 0) {
-                    strncpy(vol_name, vg + 6, sizeof(vol_name) - 1);
+                char *lv_sep = strstr(vg, "-tv_lv_");
+                if (lv_sep) {
+                    *lv_sep = 0;
+                    if (strncmp(vg, "tv_vg_", 6) == 0) {
+                        strncpy(vol_name, vg + 6, sizeof(vol_name) - 1);
+                    }
                 }
             }
             break;
@@ -136,49 +142,16 @@ static void parse_disk_list() {
         }
         ui_disk_t *d = &disks[ndisks];
         memset(d, 0, sizeof(*d));
-        char *p = line;
-        while (*p == ' ') p++;
-        char *end = strchr(p, ' ');
-        if (!end) { line = strtok(NULL, "\n"); continue; }
-        int len = end - p;
-        if (len >= (int)sizeof(d->disk)) { line = strtok(NULL, "\n"); continue; }
-        strncpy(d->disk, p, len);
-        d->disk[len] = 0;
-        p = end + 1;
-        while (*p == ' ') p++;
-        end = strchr(p, ' ');
-        if (end) p = end + 1;
-        while (*p == ' ') p++;
-        end = strstr(p, "  ");
-        if (!end) end = p + strlen(p);
-        len = end - p;
-        if (len >= (int)sizeof(d->model)) len = sizeof(d->model) - 1;
-        strncpy(d->model, p, len);
-        d->model[len] = 0;
-        p = end;
-        while (*p == ' ') p++;
-        end = strchr(p, ' ');
-        if (end) {
-            len = end - p;
-            if (len >= (int)sizeof(d->tran)) len = sizeof(d->tran) - 1;
-            strncpy(d->tran, p, len);
-            d->tran[len] = 0;
-            p = end + 1;
-            while (*p == ' ') p++;
-        }
-        d->size_gb = 0;
-        if (*p) {
-            d->size_gb = atoll(p);
-            const char *tp = p;
-            while (*tp && *tp != ' ') tp++;
-            if (tp > p && *(tp - 1) == 'T') {
-                d->size_gb *= 1024;
-            } else if (tp > p + 1 && *(tp - 2) == '.' && *(tp - 1) == 'T') {
-                d->size_gb = (long long)((atof(p)) * 1024);
-            }
-            end = strchr(p, ' ');
-            if (end) p = end;
-            while (*p == ' ') p++;
+        char model_buf[128] = "", tran_buf[16] = "", size_buf[32] = "";
+        int n = sscanf(line, "%31s %7s %127[^0-9] %15s %31s",
+                       d->disk, (char[8]){0}, model_buf, tran_buf, size_buf);
+        if (n < 2) { line = strtok(NULL, "\n"); continue; }
+        strncpy(d->model, model_buf, sizeof(d->model) - 1);
+        strncpy(d->tran, tran_buf, sizeof(d->tran) - 1);
+        if (size_buf[0]) {
+            d->size_gb = atoll(size_buf);
+            size_t slen = strlen(size_buf);
+            if (slen > 0 && size_buf[slen - 1] == 'T') d->size_gb *= 1024;
         }
         if (strstr(line, "[ROOT]")) d->is_root = 1;
         ndisks++;
@@ -223,11 +196,14 @@ static void drain_pipe_to_buf(void) {
     ssize_t n;
     while ((n = read(bench_rd_fd, tmp, sizeof(tmp) - 1)) > 0) {
         tmp[n] = 0;
-        if (bench_buf_len + (int)n < (int)sizeof(bench_buf) - 1) {
-            memcpy(bench_buf + bench_buf_len, tmp, n);
-            bench_buf_len += n;
-            bench_buf[bench_buf_len] = 0;
+        if (bench_buf_len + (int)n >= (int)sizeof(bench_buf) - 1) {
+            for (int i = 0; i < ndisks; i++) parse_bench_output(bench_buf, &disks[i]);
+            bench_buf_len = 0;
+            bench_buf[0] = 0;
         }
+        memcpy(bench_buf + bench_buf_len, tmp, n);
+        bench_buf_len += n;
+        bench_buf[bench_buf_len] = 0;
     }
 }
 
@@ -256,9 +232,8 @@ static void auto_bench_start() {
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
-        char cmd[PATH_MAX + 512];
-        snprintf(cmd, sizeof(cmd), "%s --bench --disks %s", tool_path, disklist);
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        char *bench_argv[] = {tool_path, "--bench", "--disks", disklist, NULL};
+        execvp(tool_path, bench_argv);
         _exit(127);
     }
     close(pipefd[1]);
@@ -330,7 +305,11 @@ static void draw_status_bar(const char *msg, const char *hint) {
     attron(A_REVERSE);
     mvhline(maxy - 1, 0, ' ', maxx);
     if (msg) mvprintw(maxy - 1, 1, " %s", msg);
-    if (hint) mvprintw(maxy - 1, maxx - (int)strlen(hint) - 3, " %s ", hint);
+    if (hint) {
+        int hint_x = maxx - (int)strlen(hint) - 3;
+        if (hint_x < 1) hint_x = 1;
+        mvprintw(maxy - 1, hint_x, " %s ", hint);
+    }
     attroff(A_REVERSE);
 }
 
@@ -392,8 +371,10 @@ static int mb_to_dirty_ratio(long long total_kb, int mb) {
 static void screen_ram_cache() {
     if (!check_terminal_size()) return;
     read_meminfo(&ram_cache);
-    ram_cache.original_dirty_ratio = read_sysctl_int("vm.dirty_ratio");
-    ram_cache.original_dirty_bg_ratio = read_sysctl_int("vm.dirty_background_ratio");
+    if (system_dirty_ratio < 0) system_dirty_ratio = read_sysctl_int("vm.dirty_ratio");
+    if (system_dirty_bg_ratio < 0) system_dirty_bg_ratio = read_sysctl_int("vm.dirty_background_ratio");
+    ram_cache.original_dirty_ratio = system_dirty_ratio;
+    ram_cache.original_dirty_bg_ratio = system_dirty_bg_ratio;
     if (ram_cache.original_dirty_ratio < 0) ram_cache.original_dirty_ratio = 20;
     if (ram_cache.original_dirty_bg_ratio < 0) ram_cache.original_dirty_bg_ratio = 10;
     int total_mb = ram_cache.total_kb / 1024;
@@ -1285,6 +1266,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    system_dirty_ratio = read_sysctl_int("vm.dirty_ratio");
+    system_dirty_bg_ratio = read_sysctl_int("vm.dirty_background_ratio");
+
     parse_disk_list();
     detect_existing_volume();
     auto_bench_start();
@@ -1301,8 +1285,19 @@ int main(int argc, char *argv[]) {
         }
     }
 exit:
-    if (bench_pid > 0) { kill(bench_pid, SIGTERM); waitpid(bench_pid, NULL, 0); }
+    if (bench_pid > 0) {
+        kill(bench_pid, SIGTERM);
+        for (int i = 0; i < 20; i++) {
+            pid_t ret = waitpid(bench_pid, NULL, WNOHANG);
+            if (ret > 0) break;
+            usleep(100000);
+        }
+        kill(bench_pid, SIGKILL);
+        waitpid(bench_pid, NULL, 0);
+    }
     if (bench_rd_fd >= 0) close(bench_rd_fd);
     endwin();
     return 0;
 }
+
+#pragma GCC diagnostic pop

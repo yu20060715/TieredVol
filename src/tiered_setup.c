@@ -6,33 +6,49 @@
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <time.h>
 #include <signal.h>
 #include <dirent.h>
+#include <linux/fs.h>
+#include <math.h>
+#include <limits.h>
 #include "tiered_common.h"
+#include "version.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #pragma GCC diagnostic ignored "-Wstringop-truncation"
 
-#define VERSION "1.2.0"
 #define MAX_DISKS 8
 
 static volatile sig_atomic_t bench_interrupted = 0;
+static volatile sig_atomic_t orphan_abort = 0;
 
 static void bench_signal_handler(int sig) {
     (void)sig;
     bench_interrupted = 1;
 }
 
-static int run(const char *fmt, ...) {
-    char cmd[4096];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(cmd, sizeof(cmd), fmt, ap);
-    va_end(ap);
-    return system(cmd);
+static void orphan_sigint(int sig) {
+    (void)sig;
+    orphan_abort = 1;
+}
+
+static void print_usage(const char *prog) {
+    printf("TieredVol — Tiered Storage Volume Manager v%s\n\n", VERSION);
+    printf("Usage:\n");
+    printf("  %s --list                              List all disks\n", prog);
+    printf("  %s --bench --disks sda,sdb,sdc         Benchmark disks (parallel)\n", prog);
+    printf("  %s --create --name NAME --disks ...    Create tiered volume\n", prog);
+    printf("  %s --remove --name NAME                Remove tiered volume\n", prog);
+    printf("  %s --destroy --name NAME               Remove tiered volume\n", prog);
+    printf("  %s --status                            Show status\n", prog);
+    printf("  %s --version                           Show version\n", prog);
+    printf("\nExamples:\n");
+    printf("  sudo %s --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast\n", prog);
+    printf("  sudo %s --remove --name fastpool\n", prog);
 }
 
 static int run_sudo(const char *fmt, ...) {
@@ -59,6 +75,23 @@ static int safe_execvp(const char *path, char *const argv[]) {
     if (pid < 0) return -1;
     if (pid == 0) {
         execvp(path, argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static int run_sudo_argv(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        char *sudo_argv[64];
+        sudo_argv[0] = "sudo";
+        int i = 1;
+        for (char *const *a = argv; *a && i < 62; a++) sudo_argv[i++] = *a;
+        sudo_argv[i] = NULL;
+        execvp("sudo", sudo_argv);
         _exit(127);
     }
     int status;
@@ -120,51 +153,63 @@ static void sysfs_model(const char *disk, char *out, size_t len) {
     }
 }
 
+static int is_virtual_disk(const char *name) {
+    return strncmp(name, "loop", 4) == 0 || strncmp(name, "ram", 3) == 0 || strncmp(name, "dm-", 3) == 0;
+}
+
 static int load_all_disk_info(disk_info_t *out, int max) {
     int n = 0;
-    FILE *p = popen("lsblk -d -o NAME,TRAN 2>/dev/null", "r");
+    FILE *p = popen("lsblk -d -o NAME,TRAN,MOUNTPOINT 2>/dev/null", "r");
     if (p) {
         char line[256];
         if (!fgets(line, sizeof(line), p)) { pclose(p); return n; }
         while (fgets(line, sizeof(line), p) && n < max) {
             line[strcspn(line, "\n")] = 0;
-            char *tok = strtok(line, " ");
-            if (!tok) continue;
-            if (strncmp(tok, "loop", 4) == 0 || strncmp(tok, "ram", 3) == 0 ||
-                strncmp(tok, "dm-", 3) == 0) continue;
-            strncpy(out[n].name, tok, sizeof(out[n].name) - 1);
+            char *name = strtok(line, " ");
+            char *tran = strtok(NULL, " ");
+            char *mnt = strtok(NULL, " ");
+            if (!name) continue;
+            if (is_virtual_disk(name)) continue;
+            strncpy(out[n].name, name, sizeof(out[n].name) - 1);
             out[n].name[sizeof(out[n].name) - 1] = 0;
-            tok = strtok(NULL, " ");
-            strncpy(out[n].tran, tok ? tok : "unknown", sizeof(out[n].tran) - 1);
+            strncpy(out[n].tran, tran ? tran : "unknown", sizeof(out[n].tran) - 1);
             out[n].tran[sizeof(out[n].tran) - 1] = 0;
             out[n].is_root = 0;
+            if (mnt && (strcmp(mnt, "/") == 0 || strcmp(mnt, "[swap]") == 0))
+                out[n].is_root = 1;
             n++;
-        }
-        pclose(p);
-    }
-    p = popen("lsblk -n -o NAME,MOUNTPOINT 2>/dev/null", "r");
-    if (p) {
-        char line[256];
-        while (fgets(line, sizeof(line), p)) {
-            line[strcspn(line, "\n")] = 0;
-            char *name = strtok(line, " ");
-            char *mnt = strtok(NULL, " ");
-            if (!name || !mnt) continue;
-            if (strcmp(mnt, "/") == 0 || strncmp(mnt, "/home", 5) == 0 || strcmp(mnt, "[swap]") == 0) {
-                for (int i = 0; i < n; i++) {
-                    if (strcmp(out[i].name, name) == 0) { out[i].is_root = 1; break; }
-                }
-            }
         }
         pclose(p);
     }
     return n;
 }
 
+static void find_mount_for_disk(const char *disk, char *mp, size_t mp_size) {
+    (void)mp_size;
+    mp[0] = 0;
+    char dev_pattern[64];
+    snprintf(dev_pattern, sizeof(dev_pattern), "/dev/%s ", disk);
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (fp) {
+        char mnt_line[512];
+        while (fgets(mnt_line, sizeof(mnt_line), fp)) {
+            if (strncmp(mnt_line, dev_pattern, strlen(dev_pattern)) == 0) {
+                sscanf(mnt_line, "%*s %511s", mp);
+                break;
+            }
+        }
+        fclose(fp);
+    }
+}
+
 static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
     *write_spd = *read_spd = 0;
     char mp[512] = {0};
     int need_unmount = 0;
+    int result = -1;
+    double *ws = NULL;
+    double *rs = NULL;
+    char cleanup_path[600] = "";
 
     struct sigaction sa_new, sa_old_int, sa_old_term;
     memset(&sa_new, 0, sizeof(sa_new));
@@ -175,13 +220,7 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
     sigaction(SIGTERM, &sa_new, &sa_old_term);
     bench_interrupted = 0;
 
-    {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "awk -v d=/dev/%s '$1==d{print $2}' /proc/mounts", disk);
-        FILE *fp = popen(cmd, "r");
-        if (fp) { if (!fgets(mp, sizeof(mp), fp)) mp[0] = 0; pclose(fp); }
-        mp[strcspn(mp, "\n")] = 0;
-    }
+    find_mount_for_disk(disk, mp, sizeof(mp));
 
     if (mp[0] == 0) {
         fprintf(stderr, "    /dev/%s is not mounted, attempting to mount...\n", disk);
@@ -216,104 +255,131 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
             fprintf(stderr, "    ERROR: /dev/%s cannot be mounted. Filesystem may be corrupted.\n", disk);
             fprintf(stderr, "    Reformat with: sudo mkfs.ext4 /dev/%s\n", disk);
             rmdir(mp);
-            return -1;
+            goto cleanup;
         }
         need_unmount = 1;
     }
 
     if (mp[0] == 0) {
         fprintf(stderr, "Warning: cannot mount /dev/%s for benchmark\n", disk);
-        return -1;
+        goto cleanup;
     }
 
-    int iterations = 5;
-    int keep = 3;
-    long long file_size = 512LL * 1024 * 1024;
-    int block_size = 1024 * 1024;
+    {
+        int iterations = 5;
+        long long file_size = 512LL * 1024 * 1024;
+        int block_size = 1024 * 1024;
 
-    double *ws = calloc(iterations, sizeof(double));
-    double *rs = calloc(iterations, sizeof(double));
-    if (!ws || !rs) { free(ws); free(rs); return -1; }
+        ws = calloc(iterations, sizeof(double));
+        rs = calloc(iterations, sizeof(double));
+        if (!ws || !rs) goto cleanup;
 
-    for (int iter = 0; iter < iterations; iter++) {
-        if (bench_interrupted) break;
+        int completed = 0;
+        for (int iter = 0; iter < iterations; iter++) {
+            if (bench_interrupted) break;
 
-        char testpath[600];
-        snprintf(testpath, sizeof(testpath), "%s/.bench_%s", mp, disk);
+            char testpath[PATH_MAX];
+            snprintf(testpath, sizeof(testpath), "%s/.bench_%s", mp, disk);
+            snprintf(cleanup_path, sizeof(cleanup_path), "%s", testpath);
 
-        int fd = open(testpath, O_RDWR | O_CREAT | O_DIRECT, 0644);
-        if (fd < 0) fd = open(testpath, O_RDWR | O_CREAT, 0644);
-        if (fd < 0) { fprintf(stderr, "    [debug] open(%s) failed\n", testpath); continue; }
-        (void)!ftruncate(fd, 0);
-        void *buf = NULL;
-        if (posix_memalign(&buf, 4096, block_size) != 0 || !buf) { close(fd); continue; }
-        memset(buf, 'A', block_size);
+            int fd = open(testpath, O_RDWR | O_CREAT | O_DIRECT, 0644);
+            if (fd < 0) fd = open(testpath, O_RDWR | O_CREAT, 0644);
+            if (fd < 0) { fprintf(stderr, "    [debug] open(%s) failed\n", testpath); continue; }
+            if (ftruncate(fd, 0) != 0) { close(fd); continue; }
+            void *buf = NULL;
+            if (posix_memalign(&buf, 4096, block_size) != 0 || !buf) { close(fd); continue; }
+            memset(buf, 'A', block_size);
 
-        struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-        long long written = 0;
-        while (written < file_size) {
-            ssize_t n = pwrite(fd, buf, block_size, written);
-            if (n <= 0) break;
-            written += n;
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            long long written = 0;
+            while (written < file_size) {
+                ssize_t n = pwrite(fd, buf, block_size, written);
+                if (n <= 0) break;
+                written += n;
+            }
+            fdatasync(fd);
+
+            int fd_disk = open(disk, O_RDONLY);
+            if (fd_disk >= 0) { ioctl(fd_disk, BLKFLSBUF, NULL); close(fd_disk); }
+
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+            ws[completed] = (double)written / (1024.0 * 1024.0) / elapsed;
+
+            sync();
+            int dcfd = open("/proc/sys/vm/drop_caches", O_WRONLY);
+            if (dcfd >= 0) { (void)!write(dcfd, "3", 1); close(dcfd); }
+
+            lseek(fd, 0, SEEK_SET);
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            long long readtotal = 0;
+            while (readtotal < file_size) {
+                ssize_t n = pread(fd, buf, block_size, readtotal);
+                if (n <= 0) break;
+                readtotal += n;
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+            rs[completed] = (double)readtotal / (1024.0 * 1024.0) / elapsed;
+            completed++;
+
+            free(buf);
+            close(fd);
+            unlink(testpath);
+            cleanup_path[0] = 0;
         }
-        fdatasync(fd);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-        ws[iter] = (double)written / (1024.0 * 1024.0) / elapsed;
 
-        sync();
-        int dcfd = open("/proc/sys/vm/drop_caches", O_WRONLY);
-        if (dcfd >= 0) { (void)!write(dcfd, "3", 1); close(dcfd); }
-
-        lseek(fd, 0, SEEK_SET);
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-        long long readtotal = 0;
-        while (readtotal < file_size) {
-            ssize_t n = pread(fd, buf, block_size, readtotal);
-            if (n <= 0) break;
-            readtotal += n;
+        if (completed >= 3) {
+            for (int i = 0; i < completed - 1; i++)
+                for (int j = i + 1; j < completed; j++)
+                    if (ws[j] > ws[i]) { double t = ws[i]; ws[i] = ws[j]; ws[j] = t; }
+            for (int i = 0; i < completed - 1; i++)
+                for (int j = i + 1; j < completed; j++)
+                    if (rs[j] > rs[i]) { double t = rs[i]; rs[i] = rs[j]; rs[j] = t; }
+            double sw = 0, sr = 0;
+            int cnt = 0;
+            for (int i = 1; i < completed - 1; i++) { sw += ws[i]; sr += rs[i]; cnt++; }
+            if (cnt > 0) { *write_spd = sw / cnt; *read_spd = sr / cnt; }
+        } else if (completed > 0) {
+            double sw = 0, sr = 0;
+            for (int i = 0; i < completed; i++) { sw += ws[i]; sr += rs[i]; }
+            *write_spd = sw / completed;
+            *read_spd = sr / completed;
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
-        rs[iter] = (double)readtotal / (1024.0 * 1024.0) / elapsed;
-
-        free(buf);
-        close(fd);
-        unlink(testpath);
-    }
-
-    if (iterations >= 3) {
-        for (int i = 0; i < iterations - 1; i++)
-            for (int j = i + 1; j < iterations; j++)
-                if (ws[j] > ws[i]) { double t = ws[i]; ws[i] = ws[j]; ws[j] = t; }
-        for (int i = 0; i < iterations - 1; i++)
-            for (int j = i + 1; j < iterations; j++)
-                if (rs[j] > rs[i]) { double t = rs[i]; rs[i] = rs[j]; rs[j] = t; }
-        double sw = 0, sr = 0;
-        for (int i = 1; i < keep + 1; i++) { sw += ws[i]; sr += rs[i]; }
-        *write_spd = sw / keep;
-        *read_spd = sr / keep;
     }
 
     if (need_unmount && mp[0]) {
-        char ucmd[512];
-        snprintf(ucmd, sizeof(ucmd), "sudo umount %s 2>/dev/null", mp);
-        (void)!system(ucmd);
+        char *umount_argv[] = {"sudo", "umount", mp, NULL};
+        (void)run_sudo_argv(umount_argv);
         rmdir(mp);
     }
 
+    result = (*write_spd > 0 || *read_spd > 0) ? 0 : -1;
+
+cleanup:
+    if (cleanup_path[0]) unlink(cleanup_path);
+    if (need_unmount && mp[0] && result != 0) {
+        char *umount_argv[] = {"sudo", "umount", mp, NULL};
+        (void)run_sudo_argv(umount_argv);
+        rmdir(mp);
+    }
     sigaction(SIGINT, &sa_old_int, NULL);
     sigaction(SIGTERM, &sa_old_term, NULL);
-
     free(ws);
     free(rs);
-    return (*write_spd > 0 || *read_spd > 0) ? 0 : -1;
+    return result;
+}
+
+static double cmp_score(const disk_t *d) {
+    return d->speed_write * 0.6 + d->speed_read * 0.4;
 }
 
 static int cmp_speed(const void *a, const void *b) {
-    double sa = ((disk_t *)a)->speed_write;
-    double sb = ((disk_t *)b)->speed_write;
+    double sa = cmp_score((const disk_t *)a);
+    double sb = cmp_score((const disk_t *)b);
+    if (sa != sa) return 1;
+    if (sb != sb) return -1;
     return (sb > sa) - (sb < sa);
 }
 
@@ -426,7 +492,8 @@ static int cmd_bench(int argc, char *argv[]) {
                 double w = 0, r = 0;
                 int ret = bench_disk(info[i].disk, &w, &r);
                 struct { int ret; double w; double r; } result = { ret, w, r };
-                (void)!write(pipefd[1], &result, sizeof(result));
+                ssize_t written = write(pipefd[1], &result, sizeof(result));
+                (void)written;
                 close(pipefd[1]);
                 _exit(0);
             }
@@ -447,16 +514,20 @@ static int cmd_bench(int argc, char *argv[]) {
                 pid_t ret = waitpid(children[c].pid, &status, WNOHANG);
                 if (ret > 0) {
                     struct { int ret; double w; double r; } result = { -1, 0, 0 };
-                    (void)!read(children[c].pipe_fd, &result, sizeof(result));
+                    ssize_t nread = read(children[c].pipe_fd, &result, sizeof(result));
                     close(children[c].pipe_fd);
                     int idx = children[c].idx;
-                    info[idx].speed_write = result.w;
-                    info[idx].speed_read = result.r;
-                    if (result.ret == 0)
-                        printf("  /dev/%s: Write %.0f MB/s  Read %.0f MB/s\n",
-                               info[idx].disk, result.w, result.r);
-                    else
-                        printf("  /dev/%s: FAILED\n", info[idx].disk);
+                    if (nread == sizeof(result)) {
+                        info[idx].speed_write = result.w;
+                        info[idx].speed_read = result.r;
+                        if (result.ret == 0)
+                            printf("  /dev/%s: Write %.0f MB/s  Read %.0f MB/s\n",
+                                   info[idx].disk, result.w, result.r);
+                        else
+                            printf("  /dev/%s: FAILED\n", info[idx].disk);
+                    } else {
+                        printf("  /dev/%s: pipe read error\n", info[idx].disk);
+                    }
                     children[c].pid = 0;
                     done++;
                 }
@@ -513,7 +584,15 @@ static int cmd_create(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--disks") == 0 && i + 1 < argc) disk_spec = argv[++i];
         else if (strcmp(argv[i], "--fs") == 0 && i + 1 < argc) fs = argv[++i];
         else if (strcmp(argv[i], "--mount") == 0 && i + 1 < argc) mount_point = argv[++i];
-        else if (strcmp(argv[i], "--stripesize") == 0 && i + 1 < argc) stripe_size_kb = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--stripesize") == 0 && i + 1 < argc) {
+            char *endptr;
+            long val = strtol(argv[++i], &endptr, 10);
+            if (*endptr != '\0' || endptr == argv[i] || val <= 0 || val > 1048576) {
+                fprintf(stderr, "Error: invalid stripesize '%s'\n", argv[i]);
+                return 1;
+            }
+            stripe_size_kb = (int)val;
+        }
     }
 
     if (!name || !disk_spec) {
@@ -549,7 +628,13 @@ static int cmd_create(int argc, char *argv[]) {
             *colon = 0;
             strncpy(disks_arr[nd].disk, tok, 31);
             disks_arr[nd].disk[31] = 0;
-            disks_arr[nd].carve_gb = atoll(colon + 1);
+            char *endptr;
+            long long val = strtoll(colon + 1, &endptr, 10);
+            if (*endptr != '\0' || endptr == colon + 1 || val <= 0) {
+                fprintf(stderr, "Error: invalid carve size '%s'\n", colon + 1);
+                return 1;
+            }
+            disks_arr[nd].carve_gb = val;
         } else {
             strncpy(disks_arr[nd].disk, tok, 31);
             disks_arr[nd].disk[31] = 0;
@@ -620,7 +705,8 @@ static int cmd_create(int argc, char *argv[]) {
             double w = 0, r = 0;
             int ret = bench_disk(valid[i].disk, &w, &r);
             struct { int ret; double w; double r; } result = { ret, w, r };
-            (void)!write(pipefd[1], &result, sizeof(result));
+            ssize_t written = write(pipefd[1], &result, sizeof(result));
+            (void)written;
             close(pipefd[1]);
             _exit(0);
         }
@@ -640,16 +726,20 @@ static int cmd_create(int argc, char *argv[]) {
                 pid_t ret = waitpid(children[c].pid, &status, WNOHANG);
                 if (ret > 0) {
                     struct { int ret; double w; double r; } result = { -1, 0, 0 };
-                    (void)!read(children[c].pipe_fd, &result, sizeof(result));
+                    ssize_t nread = read(children[c].pipe_fd, &result, sizeof(result));
                     close(children[c].pipe_fd);
                     int idx = children[c].idx;
-                    valid[idx].speed_write = result.w;
-                    valid[idx].speed_read = result.r;
-                    if (result.ret == 0)
-                        printf("  /dev/%s: Write %.0f MB/s  Read %.0f MB/s\n",
-                               valid[idx].disk, result.w, result.r);
-                    else
-                        printf("  /dev/%s: FAILED\n", valid[idx].disk);
+                    if (nread == sizeof(result)) {
+                        valid[idx].speed_write = result.w;
+                        valid[idx].speed_read = result.r;
+                        if (result.ret == 0)
+                            printf("  /dev/%s: Write %.0f MB/s  Read %.0f MB/s\n",
+                                   valid[idx].disk, result.w, result.r);
+                        else
+                            printf("  /dev/%s: FAILED\n", valid[idx].disk);
+                    } else {
+                        printf("  /dev/%s: pipe read error\n", valid[idx].disk);
+                    }
                     children[c].pid = 0;
                     done++;
                 }
@@ -662,6 +752,13 @@ static int cmd_create(int argc, char *argv[]) {
 
     long long total_gb = 0;
     for (int i = 0; i < valid_disks; i++) total_gb += valid[i].carve_gb;
+
+    int default_stripesize = 512;
+    for (int i = 0; i < valid_disks; i++) {
+        if (strcmp(valid[i].tran, "nvme") == 0) { default_stripesize = 64; break; }
+        if (strcmp(valid[i].tran, "sata") == 0 || strcmp(valid[i].tran, "sas") == 0) { default_stripesize = 512; break; }
+    }
+    if (stripe_size_kb == 512) stripe_size_kb = default_stripesize;
 
     printf("\nConfiguration:\n");
     printf("  Name: %s\n", name);
@@ -689,16 +786,11 @@ static int cmd_create(int argc, char *argv[]) {
 
     printf("Step 1: Cleaning up old targets...\n");
     for (int i = 0; i < valid_disks; i++) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "awk -v d=/dev/%s '$1==d{print $2}' /proc/mounts", valid[i].disk);
-        FILE *fp = popen(cmd, "r");
-        if (fp) {
-            char mnt[512];
-            while (fgets(mnt, sizeof(mnt), fp)) {
-                mnt[strcspn(mnt, "\n")] = 0;
-                run_sudo("umount %s 2>/dev/null", mnt);
-            }
-            pclose(fp);
+        char mp[512];
+        find_mount_for_disk(valid[i].disk, mp, sizeof(mp));
+        if (mp[0]) {
+            char *umount_argv[] = {"sudo", "umount", mp, NULL};
+            (void)run_sudo_argv(umount_argv);
         }
         char target[64];
         make_target(target, sizeof(target), valid[i].disk);
@@ -718,9 +810,24 @@ static int cmd_create(int argc, char *argv[]) {
         char target[64];
         make_target(target, sizeof(target), valid[i].disk);
 
-        run_sudo("printf '0 %lld linear /dev/%s 0\\n' > /tmp/.tv_dmtable && "
-                 "dmsetup create %s < /tmp/.tv_dmtable",
-                 sectors, valid[i].disk, target);
+        char table[128];
+        int tlen = snprintf(table, sizeof(table), "0 %lld linear /dev/%s 0\n", sectors, valid[i].disk);
+        int pfd[2];
+        if (pipe(pfd) < 0) { fprintf(stderr, "Error: pipe failed\n"); cleanup_create(name, valid, i); return 1; }
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pfd[1]);
+            dup2(pfd[0], STDIN_FILENO);
+            close(pfd[0]);
+            char *dm_argv[] = {"sudo", "dmsetup", "create", target, NULL};
+            execvp("sudo", dm_argv);
+            _exit(127);
+        }
+        close(pfd[0]);
+        (void)!write(pfd[1], table, tlen);
+        close(pfd[1]);
+        int status;
+        waitpid(pid, &status, 0);
 
         char devpath[128];
         snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
@@ -814,8 +921,10 @@ static int cmd_create(int argc, char *argv[]) {
 
     if (mount_point && strcmp(fs, "none") != 0) {
         printf("Step 7: Mounting...\n");
-        run_sudo("mkdir -p %s", mount_point);
-        if (run_sudo("mount %s %s", lv_path, mount_point) != 0) {
+        char *mkdir_argv[] = {"sudo", "mkdir", "-p", mount_point, NULL};
+        (void)run_sudo_argv(mkdir_argv);
+        char *mount_argv[] = {"sudo", "mount", lv_path, mount_point, NULL};
+        if (run_sudo_argv(mount_argv) != 0) {
             fprintf(stderr, "Error: mount failed\n");
             cleanup_create(name, valid, valid_disks);
             return 1;
@@ -826,20 +935,29 @@ static int cmd_create(int argc, char *argv[]) {
     }
 
     printf("\nSaving config...\n");
-    char conf_path[256];
-    snprintf(conf_path, sizeof(conf_path), "/tmp/tieredvol_%s.conf", name);
-    FILE *cf = fopen(conf_path, "w");
-    if (cf) {
-        fprintf(cf, "[general]\nname=%s\ncount=%d\nfs=%s\nstripesize=%d\n", name, valid_disks, fs, stripe_size_kb);
-        if (mount_point) fprintf(cf, "mount=%s\n", mount_point);
-        fprintf(cf, "total_gb=%lld\n\n", total_gb);
-        for (int i = 0; i < valid_disks; i++) {
-            fprintf(cf, "[disk.%d]\ndevice=%s\nsize_gb=%lld\nspeed=%.0f\n\n",
-                    i, valid[i].disk, valid[i].carve_gb, valid[i].speed_write);
+    {
+        char conf_path[] = "/tmp/.tv_conf_XXXXXX";
+        int conf_fd = mkstemp(conf_path);
+        if (conf_fd >= 0) {
+            FILE *cf = fdopen(conf_fd, "w");
+            if (cf) {
+                fprintf(cf, "[general]\nname=%s\ncount=%d\nfs=%s\nstripesize=%d\n", name, valid_disks, fs, stripe_size_kb);
+                if (mount_point) fprintf(cf, "mount=%s\n", mount_point);
+                fprintf(cf, "total_gb=%lld\n\n", total_gb);
+                for (int i = 0; i < valid_disks; i++) {
+                    fprintf(cf, "[disk.%d]\ndevice=%s\nsize_gb=%lld\nspeed=%.0f\n\n",
+                            i, valid[i].disk, valid[i].carve_gb, valid[i].speed_write);
+                }
+                fclose(cf);
+                char *cp_argv[] = {"sudo", "mkdir", "-p", "/etc/tieredvol", NULL};
+                (void)run_sudo_argv(cp_argv);
+                char cp_cmd[512];
+                snprintf(cp_cmd, sizeof(cp_cmd), "sudo cp %s /etc/tieredvol/%s.conf", conf_path, name);
+                int cp_ret = system(cp_cmd);
+                (void)cp_ret;
+            }
+            unlink(conf_path);
         }
-        fclose(cf);
-        run_sudo("mkdir -p /etc/tieredvol && cp %s /etc/tieredvol/%s.conf", conf_path, name);
-        run("rm -f %s", conf_path);
     }
 
     printf("\n=== Complete! ===\n");
@@ -895,8 +1013,10 @@ static int cmd_remove(int argc, char *argv[]) {
             int orphan_count = 0;
             while (fgets(line, sizeof(line), p) && ntargets < MAX_DISKS) {
                 line[strcspn(line, "\n")] = 0;
-                if (strncmp(line, "tv_", 3) == 0 && strstr(line, "_carve")) {
-                    snprintf(targets[ntargets], sizeof(targets[0]), "%s", line);
+                char *tok = strtok(line, "\t ");
+                if (!tok) continue;
+                if (strncmp(tok, "tv_", 3) == 0 && strstr(tok, "_carve")) {
+                    snprintf(targets[ntargets], sizeof(targets[0]), "%s", tok);
                     ntargets++;
                     orphan_count++;
                 }
@@ -905,13 +1025,29 @@ static int cmd_remove(int argc, char *argv[]) {
             if (orphan_count > 0) {
                 fprintf(stderr, "  WARNING: Found %d orphan dm targets matching 'tv_*_carve'.\n", orphan_count);
                 fprintf(stderr, "  These will ALL be removed. Press Ctrl+C within 3 seconds to abort.\n");
-                sleep(3);
+                struct sigaction sa_new, sa_old;
+                memset(&sa_new, 0, sizeof(sa_new));
+                sa_new.sa_handler = orphan_sigint;
+                sigemptyset(&sa_new.sa_mask);
+                sigaction(SIGINT, &sa_new, &sa_old);
+                orphan_abort = 0;
+                for (int i = 0; i < 30 && !orphan_abort; i++) usleep(100000);
+                sigaction(SIGINT, &sa_old, NULL);
+                if (orphan_abort) {
+                    fprintf(stderr, "  Aborted.\n");
+                    return 1;
+                }
             }
         }
     }
 
     printf("Unmounting...\n");
-    run_sudo("umount /dev/mapper/tv_vg_%s-tv_lv_%s 2>/dev/null", name, name);
+    {
+        char lv_path[256];
+        snprintf(lv_path, sizeof(lv_path), "/dev/mapper/tv_vg_%s-tv_lv_%s", name, name);
+        char *umount_argv[] = {"sudo", "umount", lv_path, NULL};
+        (void)run_sudo_argv(umount_argv);
+    }
 
     printf("Removing LV...\n");
     {
@@ -938,13 +1074,18 @@ static int cmd_remove(int argc, char *argv[]) {
             char *const pv_argv[] = {"pvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-ff", "-y", devpath, NULL};
             (void)safe_execvp("pvremove", pv_argv);
         }
-        run_sudo("dmsetup remove %s 2>/dev/null", targets[i]);
+        char *dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
+        (void)run_sudo_argv(dm_argv);
         printf("  Removed %s\n", targets[i]);
     }
 
     printf("Removing config...\n");
-    run_sudo("rm -f /etc/tieredvol/%s.conf", name);
-    run_sudo("rmdir /etc/tieredvol 2>/dev/null");
+    {
+        char *rm_argv[] = {"sudo", "rm", "-f", conf_path, NULL};
+        (void)run_sudo_argv(rm_argv);
+        char *rmdir_argv[] = {"sudo", "rmdir", "/etc/tieredvol", NULL};
+        (void)run_sudo_argv(rmdir_argv);
+    }
 
     printf("\n=== Remove Complete ===\n");
     return 0;
@@ -1000,17 +1141,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc < 2) {
-        printf("TieredVol — Tiered Storage Volume Manager v%s\n\n", VERSION);
-        printf("Usage:\n");
-        printf("  tiered_setup --list                              List all disks\n");
-        printf("  tiered_setup --bench --disks sda,sdb,sdc         Benchmark disks (parallel)\n");
-        printf("  tiered_setup --create --name NAME --disks ...    Create tiered volume\n");
-        printf("  tiered_setup --remove --name NAME                Remove tiered volume\n");
-        printf("  tiered_setup --status                            Show status\n");
-        printf("  tiered_setup --version                           Show version\n");
-        printf("\nExamples:\n");
-        printf("  sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast\n");
-        printf("  sudo tiered_setup --remove --name fastpool\n");
+        print_usage(argv[0]);
         return 0;
     }
 
@@ -1021,8 +1152,8 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[1], "--status") == 0) return cmd_status();
     if (strcmp(argv[1], "--version") == 0) { printf("TieredVol %s\n", VERSION); return 0; }
     if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
-        argc = 1;
-        return main(1, argv);
+        print_usage(argv[0]);
+        return 0;
     }
 
     fprintf(stderr, "Unknown command: %s\n", argv[1]);

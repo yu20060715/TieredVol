@@ -4,10 +4,10 @@ PREFIX=/usr/local
 
 all: tiered_setup tiered_ui
 
-tiered_setup: src/tiered_setup.c src/tiered_common.h
-	$(CC) $(CFLAGS) -o $@ $<
+tiered_setup: src/tiered_setup.c src/tiered_common.h src/version.h
+	$(CC) $(CFLAGS) -o $@ $< -lm
 
-tiered_ui: src/tiered_ui.c src/tiered_common.h
+tiered_ui: src/tiered_ui.c src/tiered_common.h src/version.h
 	$(CC) $(CFLAGS) -o $@ $< -lncurses
 
 test_common: tests/test_common.c src/tiered_common.h
