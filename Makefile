@@ -7,13 +7,13 @@ all: tiered_setup tiered_ui
 tiered_setup: src/tiered_setup.c src/tiered_common.h src/version.h
 	$(CC) $(CFLAGS) -o $@ $< -lm
 
-tiered_ui: src/tiered_ui.c src/tiered_common.h src/version.h
+tiered_ui: src/tiered_ui.c src/tiered_common.h src/tiered_ui_helpers.h src/version.h
 	$(CC) $(CFLAGS) -o $@ $< -lncurses
 
 test_common: tests/test_common.c src/tiered_common.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-test_tui: tests/test_tui.c
+test_tui: tests/test_tui.c src/tiered_ui_helpers.h
 	$(CC) $(CFLAGS) -o $@ $< -lm
 
 test: test_tui test_common

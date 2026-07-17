@@ -40,6 +40,15 @@ static double saved_speed_w[MAX_DISKS], saved_speed_r[MAX_DISKS];
 static int system_dirty_ratio = -1;
 static int system_dirty_bg_ratio = -1;
 
+static volatile sig_atomic_t got_signal = 0;
+
+static void signal_handler(int sig) {
+    (void)sig;
+    got_signal = 1;
+    endwin();
+    _exit(1);
+}
+
 static void detect_tool_path() {
     char *base = getenv("TIERED_VOL_DIR");
     if (base && base[0]) {
@@ -130,10 +139,20 @@ static void parse_disk_list() {
         }
         ui_disk_t *d = &disks[ndisks];
         memset(d, 0, sizeof(*d));
+        int llen = (int)strlen(line);
+        if (llen < 20) { line = strtok(NULL, "\n"); continue; }
+        int m_end = 20 + 28; if (m_end > llen) m_end = llen;
+        int t_start = m_end; int t_end = t_start + 12; if (t_end > llen) t_end = llen;
+        int s_start = t_end; int s_end = s_start + 8; if (s_end > llen) s_end = llen;
+        int nm = m_end - 20; while (nm > 0 && line[20 + nm - 1] == ' ') nm--;
+        int nt = t_end - t_start; while (nt > 0 && line[t_start + nt - 1] == ' ') nt--;
+        int ns = s_end - s_start; while (ns > 0 && line[s_start + ns - 1] == ' ') ns--;
+        if (nm <= 0 || nt <= 0) { line = strtok(NULL, "\n"); continue; }
         char model_buf[128] = "", tran_buf[16] = "", size_buf[32] = "";
-        int n = sscanf(line, "%31s %7s %127[^0-9] %15s %31s",
-                       d->disk, (char[8]){0}, model_buf, tran_buf, size_buf);
-        if (n < 2) { line = strtok(NULL, "\n"); continue; }
+        memcpy(d->disk, line, (nm < 31 ? nm : 31)); d->disk[nm < 31 ? nm : 31] = 0;
+        memcpy(model_buf, line + 20, (nm < 127 ? nm : 127)); model_buf[nm < 127 ? nm : 127] = 0;
+        memcpy(tran_buf, line + t_start, (nt < 15 ? nt : 15)); tran_buf[nt < 15 ? nt : 15] = 0;
+        if (ns > 0) { memcpy(size_buf, line + s_start, (ns < 31 ? ns : 31)); size_buf[ns < 31 ? ns : 31] = 0; }
         strncpy(d->model, model_buf, sizeof(d->model) - 1);
         strncpy(d->tran, tran_buf, sizeof(d->tran) - 1);
         if (size_buf[0]) {
@@ -197,6 +216,7 @@ static void auto_bench_start() {
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+        setpgid(0, 0);
         char *bench_argv[] = {tool_path, "--bench", "--disks", disklist, NULL};
         execvp(tool_path, bench_argv);
         _exit(127);
@@ -520,7 +540,9 @@ static int screen_main() {
             case KEY_DOWN: sel = (sel + 1) % nitems; break;
             case '\n': case KEY_ENTER: return sel;
             case 'q': case 'Q': case 27: return 6;
-            case KEY_RESIZE: break;
+            case KEY_RESIZE:
+                if (!check_terminal_size()) return 6;
+                break;
         }
     }
 }
@@ -667,6 +689,7 @@ static void screen_bench() {
         }
     }
 
+    while (1) {
     clear();
     int maxy = getmaxy(stdscr);
     int maxx = getmaxx(stdscr);
@@ -705,7 +728,10 @@ static void screen_bench() {
     attroff(A_BOLD);
     draw_status_bar("Press any key to continue", "Any key:Continue");
     refresh();
-    getch();
+    int ch = getch();
+    if (ch == KEY_RESIZE) continue;
+    break;
+    }
 }
 
 static int input_str(int y, int x, int w, const char *prompt, char *buf, int bufsize, const char *def) {
@@ -750,7 +776,7 @@ static int input_str(int y, int x, int w, const char *prompt, char *buf, int buf
                 cx = x + 20 + pos;
                 move(cy, cx);
             }
-        } else if (ch >= 32 && ch < 127 && len < bufsize - 1) {
+        } else if (ch >= 32 && ch < 127 && len < bufsize - 1 && len < w) {
             memmove(buf + pos + 1, buf + pos, len - pos + 1);
             buf[pos] = ch;
             pos++;
@@ -1098,36 +1124,52 @@ static void screen_status() {
             run_cmd(df_cmd, df_out, sizeof(df_out));
         }
 
-        draw_box(sy, 1, 8, bw, "Volume");
+        int content_lines = 1;
+        char *tmp;
+        char lv_copy[2048];
+        memcpy(lv_copy, lv_out, sizeof(lv_copy));
+        tmp = strtok(lv_copy, "\n");
+        while (tmp) { content_lines++; tmp = strtok(NULL, "\n"); }
+        if (mount_point[0]) content_lines++;
+        char df_copy[2048];
+        memcpy(df_copy, df_out, sizeof(df_copy));
+        int df_skip = 0;
+        tmp = strtok(df_copy, "\n");
+        while (tmp) { if (df_skip) content_lines++; df_skip = 1; tmp = strtok(NULL, "\n"); }
+        int vol_h = content_lines + 4;
+        if (vol_h < 5) vol_h = 5;
+        if (sy + vol_h > maxy - 4) vol_h = maxy - sy - 4;
+
+        draw_box(sy, 1, vol_h, bw, "Volume");
+        int box_end = sy + vol_h - 1;
         sy += 2;
-        attron(A_BOLD);
+        if (sy < box_end) { attron(A_BOLD);
         mvprintw(sy, 3, "%-14s %s", "Name:", vol_name);
-        sy++;
-        attroff(A_BOLD);
+        sy++; attroff(A_BOLD); }
 
         char *lvline = strtok(lv_out, "\n");
-        while (lvline) {
+        while (lvline && sy < box_end) {
             while (*lvline == ' ') lvline++;
             mvprintw(sy, 3, "%-14s %s", "LVM Info:", lvline);
             sy++;
             lvline = strtok(NULL, "\n");
         }
 
-        if (mount_point[0]) {
+        if (mount_point[0] && sy < box_end) {
             mvprintw(sy, 3, "%-14s %s", "Mount:", mount_point);
             sy++;
         }
 
         char *dfline = strtok(df_out, "\n");
         int df_header_skipped = 0;
-        while (dfline) {
+        while (dfline && sy < box_end) {
             if (!df_header_skipped) { df_header_skipped = 1; dfline = strtok(NULL, "\n"); continue; }
             while (*dfline == ' ') dfline++;
             mvprintw(sy, 3, "%-14s %s", "Disk Usage:", dfline);
             sy++;
             dfline = strtok(NULL, "\n");
         }
-        sy++;
+        sy = box_end + 1;
     }
 
     char dm_out[2048] = "";
@@ -1219,14 +1261,14 @@ static void screen_destroy() {
             mvprintw(2, (maxx - 30) / 2, "=== Volume Destroyed! ===");
             attroff(A_BOLD | COLOR_PAIR(1));
             snprintf(status_msg, sizeof(status_msg), "Volume '%s' destroyed!", vol_name);
+            vol_name[0] = 0;
+            mount_point[0] = 0;
         } else {
             attron(A_BOLD | COLOR_PAIR(3));
-            mvprintw(2, (maxx - 28) / 2, "=== Destroy Complete ===");
+            mvprintw(2, (maxx - 28) / 2, "=== Destroy Failed ===");
             attroff(A_BOLD | COLOR_PAIR(3));
-            snprintf(status_msg, sizeof(status_msg), "Volume destroyed.");
+            snprintf(status_msg, sizeof(status_msg), "Destroy failed — see errors above.");
         }
-        vol_name[0] = 0;
-        mount_point[0] = 0;
         int ey = 4;
         char *line = strtok(out, "\n");
         while (line && ey < maxy - 3) {
@@ -1255,6 +1297,13 @@ int main(int argc, char *argv[]) {
     noecho();
     keypad(stdscr, TRUE);
     curs_set(0);
+
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
     if (has_colors()) {
         start_color();
         init_pair(1, COLOR_CYAN, COLOR_BLACK);
@@ -1290,6 +1339,12 @@ int main(int argc, char *argv[]) {
         }
     }
 exit:
+    if (ram_cache.current_borrow_mb > 0) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "sysctl -w vm.dirty_ratio=%d vm.dirty_background_ratio=%d",
+                 ram_cache.original_dirty_ratio, ram_cache.original_dirty_bg_ratio);
+        (void)!system(cmd);
+    }
     if (bench_pid > 0) {
         kill(-bench_pid, SIGTERM);
         for (int i = 0; i < 20; i++) {
@@ -1298,7 +1353,9 @@ exit:
             usleep(100000);
         }
         kill(-bench_pid, SIGKILL);
-        waitpid(-1, NULL, 0);
+        kill(bench_pid, SIGKILL);
+        waitpid(-1, NULL, WNOHANG);
+        waitpid(bench_pid, NULL, WNOHANG);
     }
     if (bench_rd_fd >= 0) close(bench_rd_fd);
     endwin();

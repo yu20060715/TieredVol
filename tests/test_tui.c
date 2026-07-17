@@ -5,7 +5,6 @@
 #include "../src/tiered_ui_helpers.h"
 
 static char bench_buf[16384] = "";
-static int bench_buf_len = 0;
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -101,13 +100,11 @@ static void test_parse_disk_not_found(void) {
 
 static void test_bench_done_parallel(void) {
     printf("\n[TEST] bench_disk_done — parallel output, disk completed\n");
-    bench_buf_len = 0;
     bench_buf[0] = 0;
     const char *chunk =
         "  /dev/sdb: Write 263 MB/s  Read 385 MB/s\n"
         "  /dev/sdc: Write 426 MB/s  Read 441 MB/s\n";
     strcpy(bench_buf, chunk);
-    bench_buf_len = strlen(bench_buf);
 
     check(bench_disk_done("sdb", bench_buf) == 1, "sdb done");
     check(bench_disk_done("sdc", bench_buf) == 1, "sdc done");
@@ -116,19 +113,16 @@ static void test_bench_done_parallel(void) {
 
 static void test_bench_done_old_format_rejected(void) {
     printf("\n[TEST] bench_disk_done — old sequential format should NOT match\n");
-    bench_buf_len = 0;
     bench_buf[0] = 0;
     const char *chunk =
         "Testing /dev/sdb ... Write: 263 MB/s  Read: 385 MB/s\n";
     strcpy(bench_buf, chunk);
-    bench_buf_len = strlen(bench_buf);
 
     check(bench_disk_done("sdb", bench_buf) == 0, "old format 'Testing /dev/sdb ... Write:' not matched");
 }
 
 static void test_bench_done_not_started(void) {
     printf("\n[TEST] bench_disk_done — disk not in buffer at all\n");
-    bench_buf_len = 0;
     bench_buf[0] = 0;
 
     check(bench_disk_done("sdb", bench_buf) == 0, "empty buffer = not done");

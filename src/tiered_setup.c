@@ -361,6 +361,7 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
         char *umount_argv[] = {"sudo", "umount", mp, NULL};
         (void)run_sudo_argv(umount_argv);
         rmdir(mp);
+        mp[0] = 0;
     }
 
     result = (*write_spd > 0 || *read_spd > 0) ? 0 : -1;
@@ -506,8 +507,14 @@ static int cmd_bench(int argc, char *argv[]) {
                 double w = 0, r = 0;
                 int ret = bench_disk(info[i].disk, &w, &r);
                 struct { int ret; double w; double r; } result = { ret, w, r };
-                ssize_t written = write(pipefd[1], &result, sizeof(result));
-                (void)written;
+                const char *wp = (const char *)&result;
+                size_t remaining = sizeof(result);
+                while (remaining > 0) {
+                    ssize_t n = write(pipefd[1], wp, remaining);
+                    if (n <= 0) break;
+                    wp += n;
+                    remaining -= n;
+                }
                 close(pipefd[1]);
                 _exit(0);
             }
@@ -744,8 +751,14 @@ static int cmd_create(int argc, char *argv[]) {
             double w = 0, r = 0;
             int ret = bench_disk(valid[i].disk, &w, &r);
             struct { int ret; double w; double r; } result = { ret, w, r };
-            ssize_t written = write(pipefd[1], &result, sizeof(result));
-            (void)written;
+            const char *wp = (const char *)&result;
+            size_t remaining = sizeof(result);
+            while (remaining > 0) {
+                ssize_t n = write(pipefd[1], wp, remaining);
+                if (n <= 0) break;
+                wp += n;
+                remaining -= n;
+            }
             close(pipefd[1]);
             _exit(0);
         }
