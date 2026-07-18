@@ -45,8 +45,6 @@ static volatile sig_atomic_t got_signal = 0;
 static void signal_handler(int sig) {
     (void)sig;
     got_signal = 1;
-    endwin();
-    _exit(1);
 }
 
 static void detect_tool_path() {
@@ -182,8 +180,15 @@ static void drain_pipe_to_buf(void) {
         tmp[n] = 0;
         if (bench_buf_len + (int)n >= (int)sizeof(bench_buf) - 1) {
             for (int i = 0; i < ndisks; i++) parse_bench_output(bench_buf, &disks[i]);
-            bench_buf_len = 0;
-            bench_buf[0] = 0;
+            char *last_nl = strrchr(bench_buf, '\n');
+            if (last_nl) {
+                int tail_len = (int)strlen(last_nl + 1);
+                memmove(bench_buf, last_nl + 1, tail_len + 1);
+                bench_buf_len = tail_len;
+            } else {
+                bench_buf_len = 0;
+                bench_buf[0] = 0;
+            }
         }
         memcpy(bench_buf + bench_buf_len, tmp, n);
         bench_buf_len += n;
@@ -471,18 +476,26 @@ static void screen_ram_cache() {
                     char cmd[256];
                     snprintf(cmd, sizeof(cmd), "sysctl -w vm.dirty_ratio=%d vm.dirty_background_ratio=%d",
                              new_dirty, new_bg);
-                    (void)!system(cmd);
-                    ram_cache.current_borrow_mb = borrow_mb;
-                    snprintf(status_msg, sizeof(status_msg), "RAM cache: %d MB applied", borrow_mb);
+                    int ret = system(cmd);
+                    if (ret != 0) {
+                        snprintf(status_msg, sizeof(status_msg), "RAM cache: sysctl failed (exit %d)", ret);
+                    } else {
+                        ram_cache.current_borrow_mb = borrow_mb;
+                        snprintf(status_msg, sizeof(status_msg), "RAM cache: %d MB applied", borrow_mb);
+                    }
                     need_refresh = 1;
                 } else if (sel == 1) {
                     char cmd[256];
                     snprintf(cmd, sizeof(cmd), "sysctl -w vm.dirty_ratio=%d vm.dirty_background_ratio=%d",
                              ram_cache.original_dirty_ratio, ram_cache.original_dirty_bg_ratio);
-                    (void)!system(cmd);
-                    ram_cache.current_borrow_mb = 0;
-                    borrow_mb = 0;
-                    snprintf(status_msg, sizeof(status_msg), "RAM cache: reset to original");
+                    int ret = system(cmd);
+                    if (ret != 0) {
+                        snprintf(status_msg, sizeof(status_msg), "RAM cache: reset failed (exit %d)", ret);
+                    } else {
+                        ram_cache.current_borrow_mb = 0;
+                        borrow_mb = 0;
+                        snprintf(status_msg, sizeof(status_msg), "RAM cache: reset to original");
+                    }
                     need_refresh = 1;
                 } else {
                     return;
@@ -742,7 +755,7 @@ static int input_str(int y, int x, int w, const char *prompt, char *buf, int buf
     for (int i = 0; i < w; i++) mvaddch(y, x + 20 + i, ' ');
     attroff(A_UNDERLINE);
     if (def && def[0]) {
-        mvprintw(y, x + 20, "%s", def);
+        mvprintw(y, x + 20, "%.*s", w, def);
         strncpy(buf, def, bufsize - 1);
         buf[bufsize - 1] = 0;
     } else {
@@ -1327,6 +1340,7 @@ int main(int argc, char *argv[]) {
     detect_existing_volume();
     auto_bench_start();
     while (1) {
+        if (got_signal) goto exit;
         int choice = screen_main();
         switch (choice) {
             case 0: screen_disk_list(); break;

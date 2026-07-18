@@ -28,6 +28,9 @@ static inline int tiered_is_valid_mount(const char *mp) {
               *p == '_' || *p == '-'))
             return 0;
     }
+    if (strstr(mp, "/../") || strcmp(mp, "/..") == 0 ||
+        strncmp(mp + strlen(mp) - 3, "/..", 3) == 0)
+        return 0;
     return 1;
 }
 

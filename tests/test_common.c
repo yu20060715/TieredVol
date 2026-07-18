@@ -53,6 +53,9 @@ static void test_valid_mount(void) {
     check(tiered_is_valid_mount("relative") == 0, "relative rejected");
     check(tiered_is_valid_mount("") == 0, "empty rejected");
     check(tiered_is_valid_mount(NULL) == 0, "NULL rejected");
+    check(tiered_is_valid_mount("/mnt/../etc") == 0, "/mnt/../etc rejected");
+    check(tiered_is_valid_mount("/..") == 0, "/.. rejected");
+    check(tiered_is_valid_mount("/mnt/data/..") == 0, "/mnt/data/.. rejected");
 }
 
 int main(void) {

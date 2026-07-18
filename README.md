@@ -10,13 +10,39 @@ Disk C ──dm-linear──┘
 
 ## 功能
 
-| 功能 | 說明 |
-|------|------|
-| 硬碟偵測 | 自動列出所有硬碟型號、傳輸介面、容量，標記系統碟 |
-| 自動測速 | 啟動時背景自動跑 benchmark，不阻塞 UI |
-| 建立 Volume | 互動式 3 步驟精靈：選碟 → 設定容量 → 命名掛載 |
-| RAM Cache | 即時調整 `vm.dirty_ratio`，128MB 步進 |
-| Volume 管理 | 一鍵建立/查看狀態/刪除 striped LVM volume |
+### 硬碟偵測
+自動掃描系統所有硬碟，顯示型號、傳輸介面（SATA/NVMe/USB）、容量。系統碟自動標記為 `[ROOT]` 並鎖定，防止誤選。已掛載的硬碟標記 `[MOUNTED]`，不可操作。
+
+### 自動測速
+啟動時背景自動跑 parallel benchmark，同時測多顆硬碟的循序讀寫速度。測速過程不阻塞 UI，可同時瀏覽其他畫面。測速中顯示 `TESTING...` 狀態，完成後立即更新速度。按 `B` 隨時重新測速。
+
+### 建立 Volume
+互動式 3 階段精靈，一步步引導建立 striped LVM volume：
+
+1. **選碟** — 勾選要合併的硬碟，至少 2 顆
+2. **設容量** — 為每顆碟設定要切割多少 GB 給 volume（用 ← → 調整）
+3. **設定** — 輸入 volume 名稱、檔案系統（ext4/xfs/btrfs）、掛載點
+
+建立過程中自動執行：dm-linear 分割 → pvcreate → vgcreate → lvcreate → mkfs → mount。任何步驟失敗自動回滾，清理所有殘留。
+
+### Volume 管理
+- **查看狀態** — 顯示 volume 名稱、大小、掛載點、使用率、各硬碟讀寫速度
+- **刪除 Volume** — 一鍵拆除 striped LV → VG → PV → dm-linear 裝置，確認後才執行
+
+### RAM Cache 調優
+透過調整 Linux kernel 的 `vm.dirty_ratio` 參數，將部分系統 RAM 用作磁碟寫入快取。128MB 步進調整，Apply 套用 / Reset 還原原始值。退出程式時自動還原，不影響系統。
+
+適用場景：有多顆 HDD 組成 striped volume 時，借用 RAM 作為寫入緩衝，加速小檔案寫入。
+
+### 安全防護
+- **名稱驗證** — 白名單 `[a-zA-Z0-9._-]`，阻擋分號、 pipe、$、反引號等注入字元
+- **檔案系統驗證** — 只允許 ext4、ext3、xfs、btrfs、none
+- **掛載點驗證** — 必須是絕對路徑，拒絕 `..` 路徑穿越
+- **LVM 命令安全** — 使用 `fork+execvp` 取代 `system()`，避免 shell 注入
+- **暫存檔安全** — `fchmod` 即時設定權限，消除 TOCTOU 競爭窗口
+
+### 錯誤回滾
+建立 volume 時任何步驟失敗（dmsetup / pvcreate / vgcreate / lvcreate / mkfs / mount），自動清理所有已完成的裝置和 LVM 設定，不留殘留。基準測試中斷時自動 kill 所有子程序。
 
 ## 系統需求
 
@@ -51,6 +77,16 @@ sudo ./tiered_ui
 ```bash
 sudo make install
 sudo tiered_ui
+```
+
+## 建置指令
+
+```bash
+make              # 編譯 tiered_setup + tiered_ui
+make test         # 編譯並執行所有測試（53 個 test case）
+make clean        # 刪除所有編譯产物
+sudo make install # 安裝到 /usr/local/bin/
+sudo make uninstall
 ```
 
 ## CLI 使用
@@ -95,6 +131,7 @@ sudo tiered_ui
 | 畫面 | 按鍵 | 動作 |
 |------|------|------|
 | 主選單 | ↑↓ Enter Q/ESC | 選擇/確認/離開 |
+| Disk List | B | 重新測速 |
 | Disk List | Q/ESC | 返回 |
 | Benchmark | Q/ESC | 返回（測速繼續背景跑）|
 | Create Phase 0 | Space Enter | 選碟 / 下一步 |
@@ -117,19 +154,35 @@ sudo tiered_ui
 
 ```
 TieredVol/
-├── Makefile              # 建置系統
-├── README.md             # 說明文件
+├── Makefile                    # 建置系統
+├── README.md                   # 說明文件
 ├── .gitignore
 ├── src/
-│   ├── tiered_setup.c    # CLI 後端（~726 行）
-│   └── tiered_ui.c       # ncurses TUI 前端（~1140 行）
+│   ├── tiered_setup.c          # CLI 後端（1294 行）
+│   ├── tiered_ui.c             # ncurses TUI 前端（1379 行）
+│   ├── tiered_common.h         # 共用驗證函式（名稱/FS/掛載點白名單）
+│   ├── tiered_ui_helpers.h     # TUI 共用輔助（ui_disk_t、解析函式）
+│   └── version.h               # 版本常數
+└── tests/
+    ├── test_common.c           # 驗證函式測試（31 cases）
+    └── test_tui.c              # TUI 解析測試（22 cases）
 ```
+
+### 程式碼架構
+
+| 模組 | 職責 |
+|------|------|
+| `tiered_setup.c` | CLI 核心：磁碟發現、parallel benchmark、dm-linear/LVM 建立刪除、rollback、config 持久化 |
+| `tiered_ui.c` | TUI 前端：7 個畫面、3 階段建立精靈、背景測速、RAM cache 調整、終端防禦 |
+| `tiered_common.h` | 輸入驗證：`tiered_is_valid_name()`、`tiered_is_valid_fs()`、`tiered_is_valid_mount()` |
+| `tiered_ui_helpers.h` | `ui_disk_t` 結構、`parse_bench_output()`、`bench_disk_done()` |
 
 ## 注意事項
 
 - **系統碟無法使用** — dm-linear 在已掛載的根分区上會回傳 EBUSY
 - 選擇的硬碟資料會被**完全清除**
 - 需要 root 權限執行所有操作
+- RAM Cache 設定在退出時自動還原
 
 ## License
 

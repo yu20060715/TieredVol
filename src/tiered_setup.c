@@ -60,9 +60,9 @@ static int run_sudo(const char *fmt, ...) {
     char tmpf[] = "/tmp/.tv_cmd_XXXXXX";
     int tf = mkstemp(tmpf);
     if (tf < 0) return -1;
+    fchmod(tf, 0700);
     dprintf(tf, "%s\n", cmd);
     close(tf);
-    chmod(tmpf, 0700);
     char full[4300];
     snprintf(full, sizeof(full), "sudo bash %s 2>&1", tmpf);
     int ret = system(full);
@@ -529,6 +529,19 @@ static int cmd_bench(int argc, char *argv[]) {
 
         int done = 0;
         while (done < nchildren) {
+            if (bench_interrupted) {
+                for (int c = 0; c < nchildren; c++) {
+                    if (children[c].pid > 0) kill(children[c].pid, SIGTERM);
+                }
+                for (int c = 0; c < nchildren; c++) {
+                    if (children[c].pid > 0) {
+                        waitpid(children[c].pid, NULL, 0);
+                        close(children[c].pipe_fd);
+                    }
+                }
+                fprintf(stderr, "\nBenchmark interrupted.\n");
+                return 1;
+            }
             int status;
             for (int c = 0; c < nchildren; c++) {
                 if (children[c].pid <= 0) continue;
@@ -772,6 +785,20 @@ static int cmd_create(int argc, char *argv[]) {
     {
         int done = 0;
         while (done < nchildren) {
+            if (bench_interrupted) {
+                for (int c = 0; c < nchildren; c++) {
+                    if (children[c].pid > 0) kill(children[c].pid, SIGTERM);
+                }
+                for (int c = 0; c < nchildren; c++) {
+                    if (children[c].pid > 0) {
+                        waitpid(children[c].pid, NULL, 0);
+                        close(children[c].pipe_fd);
+                    }
+                }
+                fprintf(stderr, "\nBenchmark interrupted during create.\n");
+                cleanup_create(name, valid, valid_disks);
+                return 1;
+            }
             int status;
             for (int c = 0; c < nchildren; c++) {
                 if (children[c].pid <= 0) continue;
@@ -904,8 +931,22 @@ static int cmd_create(int argc, char *argv[]) {
             _exit(127);
         }
         close(pfd[0]);
-        (void)!write(pfd[1], table, tlen);
-        close(pfd[1]);
+        {
+            const char *wp = table;
+            size_t remaining = tlen;
+            while (remaining > 0) {
+                ssize_t nw = write(pfd[1], wp, remaining);
+                if (nw <= 0) break;
+                wp += nw;
+                remaining -= nw;
+            }
+            close(pfd[1]);
+            if (remaining > 0) {
+                fprintf(stderr, "Error: failed to write dm table for %s\n", valid[i].disk);
+                cleanup_create(name, valid, i);
+                return 1;
+            }
+        }
         int status;
         waitpid(pid, &status, 0);
 
