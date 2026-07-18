@@ -1,8 +1,14 @@
 # Weighted I/O Scheduler — I/O Dispatch 實作
 
-本文檔說明 TieredVol 如何將加權切塊結果實際送出 I/O，包括 io_uring dispatch、stripe buffer、offset 映射、metadata 管理。
+本文檔說明 TieredVol Scheduler 如何將加權切塊結果實際送出 I/O，包括 io_uring dispatch、stripe buffer、offset 映射、metadata 管理。
 
 前置閱讀：[PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)（切塊演算法）
+
+> **原型限制**：
+> - 應用程式必須透過 `tv_write()` / `tv_read()` 與 scheduler 互動，標準 POSIX `write()` 不經過 scheduler。
+> - 僅支援靜態 weight（初始化時計算，不可變更）。
+> - 無容錯機制（任何磁碟故障即導致整組 stripe set 損毀）。
+> - Benchmark 僅用於初始化，不是完整的儲存 benchmark（無 sustained write、無 latency、無 queue depth sweep）。
 
 ---
 

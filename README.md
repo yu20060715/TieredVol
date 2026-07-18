@@ -1,109 +1,71 @@
-# TieredVol — Tiered Storage Volume Manager
+# TieredVol Scheduler
 
-Linux tiered storage solution. Merge multiple disks into a high-performance striped volume with **custom carve capacity** + dm-linear + LVM striped + real-time RAM Cache tuning.
+An experimental user-space weighted striping scheduler for heterogeneous storage devices.
 
-## What Is TieredVol?
+TieredVol Scheduler evaluates whether weighted striping — assigning I/O chunk sizes proportional to each disk's sequential bandwidth — can improve aggregate throughput when storage devices with different speeds (e.g., NVMe + SATA SSD) are combined.
 
-TieredVol is a **TUI management tool** for Linux dm-linear + LVM striping. To maximize both read/write speed and storage space utilization, this project uses Linux native dm-linear for block-level disk carving, and combines multiple disks into a single striped LVM volume via striping — achieving throughput close to the **sum of all contributing disks' speeds**.
-
-**This is not a new storage algorithm.** TieredVol's value lies in:
-- User-friendly ncurses TUI with 3-phase create wizard
-- Input validation, double-confirmation safety prompts, and automatic rollback on failure
-- Background parallel benchmarking, real-time RAM Cache tuning
-- Pre-flight dependency checks and config persistence
-
-The underlying technology (dm-linear + LVM striping) is a well-established Linux kernel feature that has been supported since kernel 2.6 (2004). TieredVol wraps it into an accessible, safe tool.
+**This is not a filesystem, RAID implementation, Linux block driver, or Device Mapper target.** It does not intercept standard POSIX `write()` calls. Applications interact with the scheduler through a dedicated user-space API (`tv_write()` / `tv_read()`), which performs weighted striping directly on raw storage devices.
 
 ```
-Disk A (NVMe, 2000 MB/s) ──dm-linear──┐
-Disk B (SATA, 1000 MB/s) ──dm-linear──┤── LVM VG ── striped LV ── filesystem ── mount
-                                       │
-                                       ▼
-                                  ~3000 MB/s (same-speed disks)
+Application
+      │
+      ▼
+  tv_write() / tv_read()    ← Application must use this API
+      │
+      ▼
+  TieredVol Scheduler       ← weighted chunk分配 + offset mapping
+      │
+      ▼
+  io_uring                  ← async I/O dispatch
+      │
+      ▼
+  Raw Device (/dev/mapper/*)
 ```
 
-> **Mixed-speed disks?** When combining NVMe + SATA, LVM striping is limited by the slowest disk. See [Weighted Striping](#weighted-striping-scheduler) below.
+### What This Prototype Validates
 
-## Core Concept: Carve Custom Capacity
+- Weighted chunk scheduling (proportional to disk speed)
+- Static weight generation via benchmark at initialization
+- Segment-based mapping for unequal disk capacities
+- Logical ↔ Physical offset mapping
+- Parallel asynchronous dispatch using io_uring
 
-TieredVol's core feature is **carve** — slice a specified amount from each disk and combine them into one striped virtual volume. You choose exactly how much capacity each disk contributes, and the resulting speed is approximately the **sum of all contributing disks' speeds**.
+### What Is Intentionally Excluded
 
-### Example: Two Disks into One Fast Volume
+- Filesystem implementation
+- Kernel block driver / Device Mapper target
+- Data redundancy (no mirror, no parity)
+- Crash consistency / journaling
+- Metadata recovery
+- Dynamic online rebalancing
+- POSIX `write()` interception
 
-Suppose you have two disks:
+The current implementation assumes static striping weights generated during initialization. Changing weights invalidates all logical-to-physical mappings unless data migration is performed.
 
-| Disk | Model | Capacity | Sequential R/W |
-|------|-------|----------|----------------|
-| sda | NVMe SSD | 1 TB | 2000 MB/s |
-| sdb | SATA SSD | 1 TB | 1000 MB/s |
+> Under large sequential workloads with sufficient queue depth, aggregate throughput **may approach** the sum of individual sequential bandwidths. Actual results depend on CPU, PCIe bandwidth, filesystem overhead, and I/O pattern.
 
-Carve 1000G from sda and 500G from sdb:
+---
+
+## Weighted Striping vs Fixed-Size Striping
+
+Traditional RAID0 and LVM striping use a fixed stripe size for all disks. When storage devices exhibit significantly different sequential bandwidth, fixed striping underutilizes faster devices because all disks must finish their chunk before the next stripe begins.
+
+```
+Fixed striping (LVM):          Weighted striping (TieredVol):
+
+NVMe  3100 MB/s → 1 chunk     NVMe  3100 MB/s → 7 chunks = 448KB
+SATA  1700 MB/s → 1 chunk     SATA  1700 MB/s → 4 chunks = 256KB
+SATA   800 MB/s → 1 chunk     SATA   800 MB/s → 2 chunks = 128KB
+SATA   450 MB/s → 1 chunk     SATA   450 MB/s → 1 chunk  =  64KB
+
+NVMe idle waiting for SATA     All disks finish at approximately
+→ throughput ≈ slowest disk    the same time → higher aggregate
+```
+
+**Weight is generated at initialization** via a benchmark that measures sequential write speed. This is an initial estimate, not a permanent guarantee. SSD speeds change over time (e.g., SLC cache depletion), so weights may become suboptimal under sustained load.
 
 ```bash
-sudo tiered_setup --create --name fastpool --disks sda:1000,sdb:500 --fs ext4 --mount /mnt/fast
-```
-
-Result:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  striped volume: 1500 GB                                │
-│  Sequential write: ~2820 MB/s (theoretical 3000 × 94%)  │
-│  Layout: 1000G @ 2000 MB/s + 500G @ 1000 MB/s          │
-└─────────────────────────────────────────────────────────┘
-```
-
-### How Striping Works (Implementation)
-
-LVM striped volumes write to all disks **simultaneously** at the block level, not sequentially. Data is split into chunks (stripe units, default 64KB) and distributed across disks in round-robin fashion:
-
-```
-Write stream: [chunk0][chunk1][chunk2][chunk3][chunk4][chunk5]...
-              ↓       ↓       ↓       ↓       ↓       ↓
-sda (fast):  [chunk0]         [chunk2]         [chunk4]...
-sdb (slow):          [chunk1]         [chunk3]         [chunk5]...
-```
-
-Both disks are active at the same time. The kernel sends I/O requests to all disks in parallel, so total throughput approaches the **sum** of individual disk speeds.
-
-**Performance characteristics:**
-
-| Scenario | Result |
-|----------|--------|
-| Theoretical speed | sum of all disks = 2000 + 1000 = **3000 MB/s** |
-| Actual speed | theoretical × 94% ≈ **2820 MB/s** (LVM overhead + kernel scheduling) |
-| Large sequential I/O (≥1GB) | Closest to theoretical |
-| Small random I/O | Much lower — striping doesn't help much |
-| Single thread vs multi-thread | Multi-thread (fio --numjobs=4) saturates better |
-
-**Why 94% and not 100%?**
-
-- LVM metadata read/write overhead
-- Kernel I/O scheduler scheduling delay
-- CPU and memory bandwidth limits
-- Stripe alignment between disks
-
-**Important: Mixed-speed disks (NVMe + SATA)**
-
-When combining disks of different speeds, the actual throughput is limited by the slowest disk. LVM uses the same stripe size for all disks, so faster disks idle while waiting for slower ones. For example, NVMe (2000 MB/s) + SATA (500 MB/s) yields ~1000 MB/s, not 2500 MB/s. See [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) for the weighted striping algorithm, and [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) for the I/O dispatch implementation.
-
-## Weighted Striping Scheduler
-
-**Status: In Development (Phase 2)**
-
-TieredVol is building a custom I/O Scheduler that replaces LVM striping for mixed-speed disks. Instead of giving each disk the same amount of data per cycle, it assigns chunks proportional to each disk's speed:
-
-```
-NVMe  3100 MB/s → 7 chunks = 448KB
-SATA  1700 MB/s → 4 chunks = 256KB
-SATA   800 MB/s → 2 chunks = 128KB
-SATA   450 MB/s → 1 chunk  =  64KB
-
-All disks finish at the same time → throughput approaches sum of all disks
-```
-
-```bash
-# Create volume with weighted striping
+# Create a weighted striping session
 sudo tiered_setup --create --name fastpool \
     --disks nvme0n1:1000,sda:500,sdb:500 \
     --scheduler \
@@ -112,76 +74,80 @@ sudo tiered_setup --create --name fastpool \
 
 For implementation details, see:
 - [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) — Weight calculation, capacity segmentation, offset mapping
-- [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — Three-layer architecture, io_uring dispatch, stripe buffer, pitfalls
+- [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — Three-layer architecture, io_uring dispatch, stripe buffer
 - [AGENTS.md](AGENTS.md) — Full implementation guide with code for every module
 
-**How to get closest to theoretical speed:**
+---
 
-```bash
-# Using fio to saturate the striped volume
-sudo fio --name=test --filename=/mnt/fast/test --rw=write --bs=1M --size=2G --numjobs=4 --iodepth=32 --direct=1
+## Legacy: dm-linear + LVM Striping Tool
+
+The project also includes a TUI management tool for dm-linear carving + LVM striping (Phase 0/1). This tool predates the weighted striping scheduler and provides a user-friendly way to combine disks using Linux's native dm-linear and LVM.
+
+```
+Disk A (NVMe, 2000 MB/s) ──dm-linear──┐
+Disk B (SATA, 1000 MB/s) ──dm-linear──┤── LVM VG ── striped LV ── filesystem ── mount
+                                       │
+                                       ▼
+                                  ~2820 MB/s (same-speed disks)
 ```
 
-### Example: Three-Disk Combo
+> **Note:** LVM striping uses the same stripe size for all disks. When combining disks of different speeds, throughput is limited by the slowest disk. This is why the weighted striping scheduler was developed.
+
+### Features
+
+- **Carve Custom Capacity** — Slice a specified amount from each disk via dm-linear
+- **ncurses TUI** — Interactive 3-phase create wizard, disk list, benchmark, RAM cache tuning
+- **Input Validation** — Name/FS/mount whitelists, double-confirmation safety prompts
+- **Error Rollback** — Any step failure automatically cleans up all created devices
+- **Auto Benchmark** — Background parallel speed testing of all disks
+- **RAM Cache Tuning** — Adjust `vm.dirty_ratio` to borrow RAM as write cache
+
+### Quick Start (LVM Striping)
 
 ```bash
-# Carve 500G from each of 3 disks → 1.5T volume
-sudo tiered_setup --create --name tripool --disks nvme0n1:500,sdb:500,sdc:500 --fs ext4 --mount /mnt/tri
-
-# Result: ~4500 MB/s (theoretical 5000 × 90%)
-# nvme0n1: 2000 MB/s + sdb: 1500 MB/s + sdc: 1500 MB/s
+git clone https://github.com/yu20060715/TieredVol.git
+cd TieredVol
+make
+sudo ./tiered_ui
 ```
 
-### When No Carve Size Is Specified
-
-If you omit the capacity, it defaults to the full disk (minus 1GB reserved):
+### CLI Usage (LVM Striping)
 
 ```bash
-# sda takes full 1000G, sdb takes full 500G
-sudo tiered_setup --create --name pool --disks sda,sdb --fs ext4 --mount /mnt/pool
+# List all disks
+sudo tiered_setup --list
+
+# Benchmark 3 disks
+sudo tiered_setup --bench --disks sdb,sdc,nvme0n1
+
+# Create striped volume (carve 300G from sdb, 200G from sdc)
+sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast
+
+# Create volume (full sda + 500G from sdb)
+sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mount /mnt/pool
+
+# View status
+sudo tiered_setup --status
+
+# Destroy volume
+sudo tiered_setup --destroy --name fastpool
 ```
 
-## Features
+### Carve Syntax
 
-### Disk Detection
-Automatically scans all system disks, displays model, interface (SATA/NVMe/USB), and capacity. System disk is auto-tagged `[ROOT]` and locked to prevent accidental selection. Mounted disks are tagged `[MOUNTED]` and cannot be modified.
+| Example | Description |
+|---------|-------------|
+| `sda:1000,sdb:500` | Carve 1000GB from sda, 500GB from sdb |
+| `sda,sdb` | Take full disk from both (minus 1GB each) |
+| `nvme0n1:2000,sda:1000,sdb:1000` | Three disks: 2T + 1T + 1T |
 
-### Auto Benchmark
-Starts a parallel benchmark in the background on launch, simultaneously testing sequential read/write speeds of all disks. Non-blocking — you can browse other screens while testing. Shows `TESTING...` status during the test, updates speeds when complete. Press `B` to re-benchmark at any time.
-
-### Create Volume
-Interactive 3-phase wizard for creating striped LVM volumes:
-
-1. **Select Disks** — Pick disks to combine (minimum 2). Use `↑↓` to move cursor, `Space` to toggle
-2. **Set Carve Sizes** — Choose how many GB to carve from each disk (`← →` to adjust, 1GB steps)
-3. **Configure** — Enter volume name, mount point, filesystem (ext4/xfs/btrfs)
-
-Auto-executes: dm-linear carve → pvcreate → vgcreate → lvcreate → mkfs → mount. Any failure triggers automatic rollback, cleaning up all residues.
-
-### Volume Management
-- **View Status** — Shows volume name, size, mount point, usage, per-disk read/write speeds
-- **Destroy Volume** — One-click teardown of striped LV → VG → PV → dm-linear devices, with confirmation
-
-### RAM Cache Tuning
-Adjust Linux kernel's `vm.dirty_ratio` to borrow system RAM as write cache. 128MB step increments, Apply to use / Reset to restore originals. Auto-restores on exit, no system impact.
-
-Use case: Multiple HDDs in a striped volume — borrow RAM as write buffer to accelerate small file writes. TUI lets you adjust borrow amount, preview new dirty_ratio, and apply/reset in real time.
-
-### Security
-- **Name validation** — Whitelist `[a-zA-Z0-9._-]`, blocks semicolons, pipes, $, backticks
-- **Filesystem validation** — Only ext4, ext3, xfs, btrfs, none allowed
-- **Mount point validation** — Must be absolute path, rejects `..` path traversal
-- **LVM command safety** — Uses `fork+execvp` instead of `system()`, preventing shell injection
-- **Temp file safety** — `fchmod` sets permissions immediately, eliminating TOCTOU race windows
-
-### Error Rollback
-Any step failure during volume creation (dmsetup / pvcreate / vgcreate / lvcreate / mkfs / mount) automatically cleans up all created devices and LVM config. Benchmark interruption auto-kills all child processes.
+---
 
 ## Requirements
 
 - Linux (kernel 5.1+ for io_uring support)
 - `lvm2` `dmsetup` `libncurses-dev` `gcc` `make`
-- `liburing-dev` (for Weighted Striping Scheduler, optional)
+- `liburing-dev` (for Weighted Striping Scheduler)
 - Root privileges (sudo)
 
 ### Install Dependencies
@@ -197,20 +163,13 @@ sudo dnf install lvm2 ncurses-devel gcc make liburing-devel
 sudo pacman -S lvm2 ncurses gcc make liburing
 ```
 
-## Quick Start
+## Build
 
 ```bash
-git clone https://github.com/yu20060715/TieredVol.git
-cd TieredVol
-make
-sudo ./tiered_ui
-```
-
-### Install System-Wide
-
-```bash
-sudo make install
-sudo tiered_ui
+make              # Build tiered_setup + tiered_ui
+make test         # Run all tests (56 test cases)
+make clean        # Remove all build artifacts
+sudo make install # Install to /usr/local/bin/
 ```
 
 ### Enable Auto-Restore on Boot (Optional)
@@ -220,59 +179,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable tieredvol-restore
 ```
 
-After enabling, TieredVol volumes are automatically rebuilt from saved configs at boot. See [USAGE.md](docs/USAGE.md#重開機保留) for details.
-
-## Build Commands
-
-```bash
-make              # Build tiered_setup + tiered_ui
-make test         # Build and run all tests (56 test cases)
-make clean        # Remove all build artifacts
-sudo make install # Install to /usr/local/bin/
-sudo make uninstall
-```
-
-## CLI Usage
-
-```bash
-# List all disks
-sudo tiered_setup --list
-
-# Benchmark (3 disks)
-sudo tiered_setup --bench --disks sdb,sdc,nvme0n1
-
-# Create striped volume (carve 300G from sdb, 200G from sdc)
-sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast
-
-# Create striped volume (full sda + 500G from sdb)
-sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mount /mnt/pool
-
-# Create volume with weighted striping (mixed-speed disks)
-sudo tiered_setup --create --name fastpool --disks nvme0n1:500,sda:500 --scheduler --fs ext4 --mount /mnt/fast
-
-# View status
-sudo tiered_setup --status
-
-# Destroy volume
-sudo tiered_setup --destroy --name fastpool
-```
-
-### Carve Syntax
-
-The `--disks` parameter supports `diskname:sizeG` format:
-
-| Example | Description |
-|---------|-------------|
-| `sda:1000,sdb:500` | Carve 1000GB from sda, 500GB from sdb |
-| `sda,sdb` | Take full disk from both (minus 1GB each) |
-| `nvme0n1:2000,sda:1000,sdb:1000` | Three disks: 2T + 1T + 1T = 4T volume |
-| `sda:500,sdb:500,sdc:500` | 500G each from 3 disks → 1.5T volume |
+---
 
 ## TUI Interface
-
-```bash
-sudo tiered_ui
-```
 
 ```
 ┌─ Main Menu ─────────────────────┐
@@ -286,26 +195,24 @@ sudo tiered_ui
 └─────────────────────────────────┘
 ```
 
-### Keyboard Shortcuts
-
 | Screen | Key | Action |
 |--------|-----|--------|
 | Main Menu | ↑↓ Enter Q/ESC | Select / Confirm / Exit |
 | Disk List | B | Re-benchmark |
-| Disk List | Q/ESC | Back |
-| Benchmark | Q/ESC | Back (benchmark continues in background) |
 | Create Phase 1 | Space Enter | Toggle disk / Next |
-| Create Phase 2 | ←→ ↑↓ | Adjust carve size / Select disk |
-| RAM Cache | ←→ ↑↓ Enter | Adjust / Select Apply/Reset |
+| Create Phase 2 | ←→ ↑↓ | Adjust carve size |
+| RAM Cache | ←→ ↑↓ Enter | Adjust / Apply / Reset |
 | Destroy | Y | Confirm destruction |
+
+---
 
 ## Project Structure
 
 ```
 TieredVol/
-├── README.md                   # This file (English)
-├── README_CN.md                # 中文說明
-├── AGENTS.md                   # Implementation guide for developers/AI
+├── README.md
+├── README_CN.md
+├── AGENTS.md                   # Implementation guide
 ├── LICENSE                     # MIT License
 ├── docs/
 │   ├── USAGE.md                # Detailed usage guide
@@ -313,58 +220,53 @@ TieredVol/
 │   ├── PARTITION_SPLITTING.md  # Weighted striping algorithm
 │   └── WEIGHTED_IO_SCHEDULER.md # I/O dispatch implementation
 ├── scripts/
-│   ├── tieredvol-restore.sh    # Boot restore script
-│   └── tieredvol-restore.service  # systemd unit file
-├── Makefile                    # Build system
-├── .gitignore
+│   ├── tieredvol-restore.sh
+│   └── tieredvol-restore.service
+├── Makefile
 ├── src/
 │   ├── tiered_setup.c          # CLI backend
 │   ├── tiered_ui.c             # ncurses TUI frontend
-│   ├── tiered_common.h         # Shared validation (name/FS/mount whitelist)
-│   ├── tiered_ui_helpers.h     # TUI helpers (ui_disk_t, parse functions)
-│   └── version.h               # Version constant
+│   ├── tiered_common.h         # Shared validation
+│   ├── tiered_ui_helpers.h     # TUI helpers
+│   ├── version.h
+│   ├── tiered_sched.h          # Scheduler structs + API
+│   ├── tiered_sched.c          # Scheduler core
+│   ├── tiered_mapper.c         # Offset mapping
+│   ├── tiered_stripe_buf.c     # Stripe buffer
+│   ├── tiered_io_uring.c       # io_uring wrapper
+│   ├── tiered_benchmark.c      # Initialization benchmark
+│   ├── tiered_partition.c      # Weight + segment calculation
+│   └── tiered_metadata.c       # Metadata save/load
 └── tests/
-    ├── test_common.c           # Validation tests
-    └── test_tui.c              # TUI parsing tests
+    ├── test_common.c
+    └── test_tui.c
 ```
 
 ### Code Architecture
 
 | Module | Responsibility |
 |--------|---------------|
-| `tiered_setup.c` | CLI core: disk discovery, parallel benchmark, dm-linear/LVM create/destroy, rollback, config persistence |
-| `tiered_ui.c` | TUI frontend: 7 screens, 3-phase create wizard, background benchmarking, RAM cache tuning, terminal defense |
-| `tiered_common.h` | Input validation: `tiered_is_valid_name()`, `tiered_is_valid_fs()`, `tiered_is_valid_mount()` |
-| `tiered_ui_helpers.h` | `ui_disk_t` struct, `parse_bench_output()`, `bench_disk_done()` |
-| `tieredvol-restore.sh` | Boot restore script: reads `/etc/tieredvol/*.conf` and rebuilds dm-linear + LVM volumes |
-| `tieredvol-restore.service` | systemd unit: triggers restore script after local filesystem is mounted |
-
-### Phase 2: Weighted Striping (In Development)
-
-| Module | Responsibility |
-|--------|---------------|
-| `tiered_sched.h` | All struct definitions (TV_DISK, TV_SEGMENT, TV_METADATA, TV_MAP, TV_BUFFER, TV_SCHED) and API declarations |
+| `tiered_setup.c` | CLI core: disk discovery, benchmark, dm-linear/LVM/scheduler create, rollback |
+| `tiered_ui.c` | TUI frontend: 7 screens, create wizard, benchmarking, RAM cache tuning |
 | `tiered_sched.c` | Scheduler core: init, write (buffer + flush), read (mapping + io_uring), destroy |
 | `tiered_mapper.c` | Logical ↔ Physical offset mapping (prefix sum + binary search) |
 | `tiered_stripe_buf.c` | Stripe buffer management (ring buffer, flush when full) |
 | `tiered_io_uring.c` | io_uring wrapper (SQE/CQE, submit, wait) |
-| `tiered_benchmark.c` | Disk speed benchmark (O_DIRECT, 3 runs average) |
+| `tiered_benchmark.c` | Initialization benchmark (O_DIRECT, 3 runs average) — **not a storage benchmark** |
 | `tiered_partition.c` | Weight calculation, capacity segmentation, segment building |
-| `tiered_metadata.c` | Metadata save/load (text config files in /etc/tieredvol/) |
+| `tiered_metadata.c` | Metadata save/load (static weights only) |
 
-See [AGENTS.md](AGENTS.md) for complete implementation details with code for every module.
+---
 
-## Notes
+## Limitations
 
-- **System disk cannot be used** — dm-linear returns EBUSY on mounted root partition
-- **Already-carved disks blocked** — If a disk already has a `tv_*_carve` dm target, the program stops and tells you to remove the existing volume first. Removing a volume destroys all data on it — back up first.
-- **Carved portion will be overwritten** — dm-linear operates at block level, starting from sector 0. It cannot detect which blocks contain data. Any data on the carved portion will be permanently lost. Please back up before proceeding.
-- **dm-linear limitation** — dm-linear is a block-level tool, not filesystem-aware. It cannot "skip used blocks" or "only carve free space." This is a fundamental limitation of the Linux storage stack, not a defect of this project.
-- **Each disk can only be carved once** — dm-linear starts from sector 0; a second carve on the same disk would overwrite the first. If you need to re-carve, remove the existing volume first with `--remove`.
-- **Not persistent across reboot** — dm-linear targets and LVM volumes are not automatically restored on boot. Enable the systemd service with `sudo systemctl enable tieredvol-restore` for auto-restore.
-- Requires root privileges for all operations
-- RAM Cache settings auto-restore on exit
-- Carve size cannot exceed disk capacity (e.g., 1TB disk max carve = 999GB)
+- **Static weights only** — Weights are computed at initialization and fixed. Changing weights invalidates all mappings.
+- **No fault tolerance** — If any disk fails, the entire stripe set is lost. No degraded mode, no rebuild, no mirror/parity.
+- **No POSIX write() interception** — Applications must use `tv_write()` / `tv_read()`. Standard `write()` goes to the filesystem, not the scheduler.
+- **No partial stripe tracking** — Close/fsync behavior for partial stripes is not fully implemented.
+- **Benchmark is for initialization only** — The built-in benchmark measures initial sequential write speed. It is not a comprehensive storage benchmark (no sustained write, no latency, no queue depth sweep).
+- **Not persistent across reboot** — dm-linear targets and LVM volumes require the systemd service for auto-restore.
+- **System disk cannot be used** — dm-linear returns EBUSY on mounted root partition.
 
 ## License
 

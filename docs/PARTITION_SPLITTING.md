@@ -1,6 +1,8 @@
 # Partition Splitting — 切塊演算法
 
-本文檔說明 TieredVol 的核心切塊演算法：根據每顆碟的速度與容量，計算每個 cycle 每顆碟拿幾塊（chunk）。
+本文檔說明 TieredVol Scheduler 的核心切塊演算法：根據每顆碟的速度與容量，計算每個 cycle 每顆碟拿幾塊（chunk）。
+
+> **原型限制**：Weight 在初始化時透過 benchmark 產生靜態值，不可在執行時變更。更改 weight 會使所有 logical-to-physical mapping 失效，除非執行資料遷移。
 
 ---
 
