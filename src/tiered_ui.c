@@ -935,13 +935,13 @@ static int create_phase_set_carves(int *sel, int *carve, int *cursor) {
                 if (found >= 0) *cursor = found; }
                 break;
             case KEY_LEFT:
-                if (carve[*cursor] > 50) carve[*cursor] -= 50;
+                if (carve[*cursor] > 1) carve[*cursor] -= 1;
                 else carve[*cursor] = 0;
                 break;
             case KEY_RIGHT:
                 { int maxc = (int)disks[*cursor].size_gb - 1;
                 if (maxc < 0) maxc = 0;
-                if (carve[*cursor] < maxc) carve[*cursor] += 50;
+                if (carve[*cursor] < maxc) carve[*cursor] += 1;
                 if (carve[*cursor] > maxc) carve[*cursor] = maxc; }
                 break;
             case '\n': case KEY_ENTER:
@@ -1383,13 +1383,13 @@ exit:
         write_sysctl("vm.dirty_background_ratio", ram_cache.original_dirty_bg_ratio);
     }
     if (bench_pid > 0) {
-        kill(-bench_pid, SIGTERM);
+        killpg(bench_pid, SIGTERM);
         for (int i = 0; i < 20; i++) {
             pid_t ret = waitpid(-1, NULL, WNOHANG);
             if (ret > 0) break;
             usleep(100000);
         }
-        kill(-bench_pid, SIGKILL);
+        killpg(bench_pid, SIGKILL);
         kill(bench_pid, SIGKILL);
         waitpid(-1, NULL, WNOHANG);
         waitpid(bench_pid, NULL, WNOHANG);

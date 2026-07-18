@@ -81,6 +81,10 @@ sdb (慢):           [chunk1]         [chunk3]         [chunk5]...
 - CPU 和記憶體頻寬限制
 - Stripe 對齊（各碟之間的 stripe 位置對齊）
 
+**重要：混合速度碟（NVMe + SATA）**
+
+當組合不同速度的硬碟時，實際吞吐量受限於最慢的碟。LVM 對所有碟使用相同的 stripe size，所以較快的碟會空等較慢的碟。例如 NVMe（2000 MB/s）+ SATA（500 MB/s）實際只有 ~1000 MB/s，不是 2500 MB/s。詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md) 了解可大幅提升混合速度效能的進階優化。
+
 **如何接近理論速度：**
 
 ```bash
@@ -119,7 +123,7 @@ sudo tiered_setup --create --name pool --disks sda,sdb --fs ext4 --mount /mnt/po
 互動式 3 階段精靈，一步步引導建立 striped LVM volume：
 
 1. **選碟** — 勾選要合併的硬碟，至少 2 顆。用 `↑↓` 移動游標、`Space` 勾選
-2. **設容量** — 為每顆碟設定要切割多少 GB 給 volume（用 `← →` 調整，步進 50GB）
+2. **設容量** — 為每顆碟設定要切割多少 GB 給 volume（用 `← →` 調整，步進 1GB）
 3. **設定** — 輸入 volume 名稱、掛載點、檔案系統（ext4/xfs/btrfs）
 
 建立過程中自動執行：dm-linear 分割 → pvcreate → vgcreate → lvcreate → mkfs → mount。任何步驟失敗自動回滾，清理所有殘留。
@@ -270,7 +274,8 @@ TieredVol/
 ├── docs/
 │   ├── README_CN.md            # 說明文件（中文，本檔案）
 │   ├── USAGE.md                # 詳細使用教學
-│   └── PLAN.md                 # 改善計畫
+│   ├── PLAN.md                 # 改善計畫
+│   └── PARTITION_SPLITTING.md  # 按碟速度比例分配 stripe
 ├── scripts/
 │   ├── tieredvol-restore.sh    # 開機還原腳本
 │   └── tieredvol-restore.service  # systemd 單元檔

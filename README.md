@@ -81,6 +81,10 @@ Both disks are active at the same time. The kernel sends I/O requests to all dis
 - CPU and memory bandwidth limits
 - Stripe alignment between disks
 
+**Important: Mixed-speed disks (NVMe + SATA)**
+
+When combining disks of different speeds, the actual throughput is limited by the slowest disk. LVM uses the same stripe size for all disks, so faster disks idle while waiting for slower ones. For example, NVMe (2000 MB/s) + SATA (500 MB/s) yields ~1000 MB/s, not 2500 MB/s. See [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) for an advanced optimization that can significantly improve mixed-speed performance.
+
 **How to get closest to theoretical speed:**
 
 ```bash
@@ -119,7 +123,7 @@ Starts a parallel benchmark in the background on launch, simultaneously testing 
 Interactive 3-phase wizard for creating striped LVM volumes:
 
 1. **Select Disks** — Pick disks to combine (minimum 2). Use `↑↓` to move cursor, `Space` to toggle
-2. **Set Carve Sizes** — Choose how many GB to carve from each disk (`← →` to adjust, 50GB steps)
+2. **Set Carve Sizes** — Choose how many GB to carve from each disk (`← →` to adjust, 1GB steps)
 3. **Configure** — Enter volume name, mount point, filesystem (ext4/xfs/btrfs)
 
 Auto-executes: dm-linear carve → pvcreate → vgcreate → lvcreate → mkfs → mount. Any failure triggers automatic rollback, cleaning up all residues.
@@ -270,7 +274,8 @@ TieredVol/
 ├── docs/
 │   ├── README_CN.md            # Documentation (Chinese)
 │   ├── USAGE.md                # Detailed usage guide
-│   └── PLAN.md                 # Improvement roadmap
+│   ├── PLAN.md                 # Improvement roadmap
+│   └── PARTITION_SPLITTING.md  # Proportional striping by disk speed
 ├── scripts/
 │   ├── tieredvol-restore.sh    # Boot restore script
 │   └── tieredvol-restore.service  # systemd unit file
