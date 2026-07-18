@@ -1,0 +1,382 @@
+# Weighted I/O Scheduler — I/O Dispatch 實作
+
+本文檔說明 TieredVol 如何將加權切塊結果實際送出 I/O，包括 io_uring dispatch、stripe buffer、offset 映射、metadata 管理。
+
+前置閱讀：[PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)（切塊演算法）
+
+---
+
+## 架構總覽
+
+```
+Application
+     ↓
+TieredVol Scheduler
+  ┌─────────────────────────────┐
+  │  1. 查 weight table         │
+  │  2. 分配 chunks 到各碟      │
+  │  3. buffer partial stripe    │
+  │  4. io_uring submit         │
+  │  5. 等 CQE 完成             │
+  └─────────────────────────────┘
+     ↓
+NVMe ← 256KB
+SATA1 ← 64KB
+SATA2 ← 64KB
+```
+
+TieredVol 不是 RAID，而是一個 **I/O Scheduler**。它自己控制資料怎麼分配到各碟，不依賴 LVM striping。
+
+---
+
+## Weight Table
+
+從 PARTITION_SPLITTING.md 的演算法得到 weight 後，建立查表用的 prefix sum table：
+
+```
+chunk_size = 64KB
+weight = [6, 3, 2, 1]   (A, B, C, D)
+
+disk_boundary[0] = 0              (A start)
+disk_boundary[1] = 6 × 64 = 384  (B start)
+disk_boundary[2] = 9 × 64 = 576  (C start)
+disk_boundary[3] = 11 × 64 = 704 (D start)
+disk_boundary[4] = 12 × 64 = 768 (stripe end)
+
+stripe_size = 768KB
+```
+
+任何 offset 落在哪個範圍，就知道對應哪顆碟。
+
+---
+
+## Offset 映射
+
+### 寫入：Logical → Physical
+
+```c
+// input: logical_offset (bytes), chunk_size, weight, disk_list
+// output: disk_index, disk_offset
+
+stripe_no    = logical_offset / stripe_size;
+offset_in    = logical_offset % stripe_size;
+
+// binary search disk_boundary
+disk_index   = find_disk(offset_in);  // prefix sum + binary search
+disk_offset  = stripe_no * weight[disk_index] * chunk_size
+               + (offset_in - disk_boundary[disk_index]);
+```
+
+### 具體範例
+
+```
+logical_offset = 2MB = 2048KB
+stripe_size = 768KB
+
+stripe_no = 2048 / 768 = 2
+offset_in = 2048 % 768 = 512
+
+disk_boundary = [0, 384, 576, 704, 768]
+512 落在 [384, 576) → disk B (index 1)
+
+disk_offset = 2 × 3 × 64KB + (512 - 384) = 384KB + 128KB = 512KB
+```
+
+### 讀取：Physical → Logical
+
+```c
+// 已知 disk_index 和 disk_offset，反推 logical_offset
+// 相同邏輯，反向計算即可
+```
+
+---
+
+## Stripe Buffer（Partial Stripe 處理）
+
+應用程式不一定寫 stripe_size 的整數倍。例如 stripe_size = 768KB，但應用寫 100KB。
+
+### 方案 A：Buffer（推薦）
+
+TieredVol 內部維護 ring buffer：
+
+```
+寫入 100KB → buffer: [100KB / 768KB]
+寫入 200KB → buffer: [300KB / 768KB]
+寫入 468KB → buffer: [768KB / 768KB] → flush → dispatch
+```
+
+```c
+typedef struct {
+    char     *buf;
+    size_t    capacity;    // stripe_size
+    size_t    used;
+    off_t     base_offset; // stripe 起始 logical offset
+} stripe_buffer_t;
+
+int tiered_sched_write(tiered_sched_t *sched, const void *data, size_t len) {
+    size_t pos = 0;
+    while (pos < len) {
+        size_t space = sched->stripe_size - sched->buf.used;
+        size_t chunk = (len - pos < space) ? (len - pos) : space;
+        memcpy(sched->buf.buf + sched->buf.used, data + pos, chunk);
+        sched->buf.used += chunk;
+        pos += chunk;
+
+        if (sched->buf.used == sched->stripe_size) {
+            flush_stripe(sched);
+        }
+    }
+    return 0;
+}
+```
+
+### flush_stripe：真正 dispatch
+
+```c
+void flush_stripe(tiered_sched_t *sched) {
+    // 根據 weight table，把 buf 切成各碟的 chunk
+    off_t offset = sched->buf.base_offset;
+    size_t buf_pos = 0;
+
+    for (int i = 0; i < sched->ndisks; i++) {
+        size_t disk_bytes = sched->weight[i] * sched->chunk_size;
+        if (disk_bytes == 0) continue;
+
+        // 送 io_uring write
+        io_uring_sqe_set_data(sqe, ...);
+        io_uring_prep_write(sqe, sched->disks[i].fd,
+                            sched->buf.buf + buf_pos,
+                            disk_bytes, disk_offset);
+
+        buf_pos += disk_bytes;
+    }
+
+    io_uring_submit(&sched->ring);
+
+    // 等全部完成
+    for (int i = 0; i < sched->ndisks; i++) {
+        struct io_uring_cqe *cqe;
+        io_uring_wait_cqe(&sched->ring, &cqe);
+        io_uring_cqe_seen(&sched->ring, cqe);
+    }
+
+    // 重置 buffer
+    sched->buf.used = 0;
+    sched->buf.base_offset += sched->stripe_size;
+}
+```
+
+---
+
+## I/O Dispatch（io_uring）
+
+### 為什麼用 io_uring？
+
+- 同時送出多個 I/O request，不等第一個完成
+- 零拷貝（zero-copy）支援
+- 效能比 AIO / `pread/pwrite` 好很多
+- Linux 5.1+ 支援
+
+### Dispatch 流程
+
+```
+1. flush_stripe 被呼叫
+2. 依 weight table 把 buffer 切成各碟的 chunk
+3. 對每顆碟準備一個 SQE（Submission Queue Entry）
+4. io_uring_submit() — 一次送出所有 I/O
+5. io_uring_wait_cqe() — 等全部完成
+6. 處理 CQE（檢查錯誤）
+7. 重置 buffer，準備下一輪
+```
+
+### 錯誤處理
+
+```c
+for (int i = 0; i < sched->ndisks; i++) {
+    struct io_uring_cqe *cqe;
+    io_uring_wait_cqe(&sched->ring, &cqe);
+    int res = cqe->res;
+    io_uring_cqe_seen(&sched->ring, cqe);
+
+    if (res < 0) {
+        // I/O 失敗
+        // 方案 1: retry 3 次
+        // 方案 2: 標記碟為 bad，重新計算 weight
+        // 方案 3: 回報錯誤給應用程式
+    }
+}
+```
+
+---
+
+## Metadata
+
+只需要保存：
+
+```
+chunk_size:     64KB
+weight:         [6, 3, 2, 1]
+disk_list:      [nvme0n1, sda, sdb, sdc]
+stripe_size:    768KB  (= sum(weight) × chunk_size)
+```
+
+不需要記錄每個 block 的位置。所有映射都可以從 weight + offset 計算得出。
+
+### 儲存格式
+
+```
+# /etc/tieredvol/fastpool.scheduler
+[weighted_striping]
+chunk_size=65536
+weight=6,3,2,1
+disks=nvme0n1,sda,sdb,sdc
+stripe_size=786432
+```
+
+### Restore
+
+重開機後，tieredvol-restore.sh 讀取這個檔案，重建 scheduler state。
+
+---
+
+## 讀取流程
+
+與寫入相同：
+
+```
+1. 計算 logical_offset → disk_index + disk_offset
+2. io_uring submit: read(disk, buf, chunk_size, disk_offset)
+3. 等全部完成
+4. 依 offset 組回 buffer
+```
+
+### 讀取的挑戰
+
+寫入是「整個 stripe 一起寫」，但讀取可能只需要 stripe 的一部分。
+
+```
+讀取 100KB，offset 落在 stripe 的第 2 段
+
+→ 只需要讀 disk B 的對應 chunk
+→ 不需要讀其他碟
+```
+
+優化：根據 requested range，**只送需要的碟的 I/O**，不用每次都讀整 stripe。
+
+---
+
+## 效能
+
+### 理論
+
+```
+NVMe  2000 MB/s × (6/12) = 1000 MB/s 佔比
+SATA1 1500 MB/s × (3/12) =  375 MB/s 佔比
+SATA2 1000 MB/s × (2/12) =  167 MB/s 佔比
+SATA3  500 MB/s × (1/12) =   42 MB/s 佔比
+───────────────────────────────────────
+合計                          1584 MB/s
+
+實際：接近各碟速度總和 = 3000 + 1500 + 1000 + 500 = 6000 MB/s 的 ~26%
+但比標準 striping 的 ~500 MB/s 好 3 倍以上
+```
+
+### 實測方法
+
+```bash
+# 用 fio 測試加權 stripe volume
+fio --name=test --filename=/mnt/fast/test \
+    --rw=write --bs=4k --size=1G \
+    --numjobs=4 --iodepth=32 --direct=1
+```
+
+---
+
+## 實作架構
+
+```
+src/
+├── tiered_sched.c          # Scheduler 核心
+│   ├── tiered_sched_init() # 初始化：建立 weight table、分配 buffer
+│   ├── tiered_sched_write()# 寫入：buffer + flush
+│   ├── tiered_sched_read() # 讀取：offset mapping + io_uring
+│   └── tiered_sched_destroy()
+├── tiered_offset_map.c     # Logical ↔ Physical offset 映射
+├── tiered_stripe_buf.c     # Stripe buffer (ring buffer)
+├── tiered_io_uring.c       # io_uring wrapper
+├── tiered_setup.c          # CLI（加入 --scheduler 模式）
+└── tiered_ui.c             # TUI（加入 scheduler 狀態顯示）
+```
+
+### API
+
+```c
+// 初始化
+tiered_sched_t *tiered_sched_init(
+    disk_info_t *disks, int ndisks,
+    size_t chunk_size,
+    const char *config_path  // 讀取 weight 等 metadata
+);
+
+// 寫入（自動 buffer + dispatch）
+int tiered_sched_write(tiered_sched_t *sched, const void *data, size_t len);
+
+// 讀取
+int tiered_sched_read(tiered_sched_t *sched, void *buf, size_t len, off_t offset);
+
+// Flush（強制送出 partial stripe）
+int tiered_sched_flush(tiered_sched_t *sched);
+
+// 清理
+void tiered_sched_destroy(tiered_sched_t *sched);
+```
+
+---
+
+## 與現有 TieredVol 的整合
+
+### CLI 模式
+
+```bash
+# 使用 scheduler 模式建立 volume
+sudo tiered_setup --create --name fastpool \
+    --disks nvme0n1:500,sda:500 \
+    --scheduler \
+    --chunk-size 64 \
+    --fs ext4 --mount /mnt/fast
+```
+
+### TUI 模式
+
+Create Volume 精靈加入 `--scheduler` 選項。建立後，Volume Status 畫面顯示：
+- 目前的 weight table
+- 每顆碟的 chunks per cycle
+- stripe size
+- buffer 使用率
+
+### 開機還原
+
+tieredvol-restore.sh 讀取 `/etc/tieredvol/*.scheduler` 檔案，重建 scheduler state。
+
+---
+
+## 實作難度
+
+| 項目 | 難度 | 說明 |
+|------|------|------|
+| Weight table 建立 | 簡單 | prefix sum + binary search |
+| Offset 映射 | 簡單 | 數學計算 |
+| Stripe buffer | 中等 | Ring buffer + flush 機制 |
+| io_uring dispatch | 中等 | 需要 liburing 或直接 syscall |
+| Metadata 儲存 | 簡單 | 文字檔格式 |
+| 錯誤處理 | 中等 | I/O 失敗 retry / 碟壞重算 weight |
+| 部分讀取優化 | 中等 | 只送需要的碟的 I/O |
+
+---
+
+## 參考
+
+- io_uring: `io_uring_setup`, `io_uring_enter`, liburing
+- Linux block layer: `drivers/block/`
+- 切塊演算法：[PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)
+- Weighted striping 概念：本文件原創（TieredVol project）

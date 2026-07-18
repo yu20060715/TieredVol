@@ -1,363 +1,256 @@
-# Weighted Striping Scheduler — 按碟速度比例分配 I/O
+# Partition Splitting — 切塊演算法
 
-本文檔說明 TieredVol 的進階效能優化策略：**Weighted Striping Scheduler**。根據每顆碟的實際讀寫速度，以加權比例分配 I/O，讓快碟不被慢碟拖累。
-
----
-
-## 問題：統一 Stripe Size 的瓶頸
-
-標準 LVM striping / md RAID0 使用**統一的 stripe size**（chunk size），每顆碟在每個 cycle 拿到**相同大小的資料塊**。
-
-### 範例：NVMe 2000 MB/s + SATA 500 MB/s
-
-```
-stripe size = 64KB
-
-cycle 1:
-  NVMe 寫 64KB → 0.032ms（完成，等待中...）
-  SATA 寫 64KB → 0.128ms（進行中...）
-                 ↑ 0.128ms 後 SATA 完成
-                 ↑ NVMe 已空等 0.096ms
-
-cycle 2:
-  同上...
-```
-
-每個 cycle，NVMe 寫完 64KB 只要 0.032ms，但要等 SATA 0.128ms。**NVMe 每個 cycle 空等 75% 的時間。**
-
-### 效能估算
-
-| 碟 | 理論速度 | 每 cycle 寫入 | 每 cycle 時間 | 實際利用率 |
-|----|---------|-------------|-------------|-----------|
-| NVMe | 2000 MB/s | 64KB | 0.128ms | 25% |
-| SATA | 500 MB/s | 64KB | 0.128ms | 100% |
-| **合計** | 2500 MB/s | 128KB | 0.128ms | **~1000 MB/s** |
-
-**`2000 + 500 = 2500`，但實際只有 ~1000 MB/s。** 快碟被慢碟嚴重拖累。
+本文檔說明 TieredVol 的核心切塊演算法：根據每顆碟的速度與容量，計算每個 cycle 每顆碟拿幾塊（chunk）。
 
 ---
 
-## 為什麼 Partition Splitting + LVM 不可行？
+## 問題
 
-一個常見的誤解是：把 NVMe 切成 4 個 partition，讓 LVM 看到 5 個 PV（4 NVMe + 1 SATA），用 `lvcreate -i 5 -I 64k` 就能實現 4:1:1。
-
-**這是不成立的。** 原因：
-
-### 1. Linux Block Layer 會合併 BIO
-
-對 kernel 而言，`/dev/nvme0n1p1` ~ `/dev/nvme0n1p4` 只是同一個 block device 的四個 partition。當 LVM 同時對四個 partition 下 I/O 請求時，block layer 的 I/O scheduler **完全可能把四個 64KB BIO 合併成一個 256KB Write**，送一次到底層。
-
-結果：NVMe 拿到的不是「4 個平行的 64KB」，而是「1 個 256KB」。**I/O 沒有被分散到多個 queue。**
-
-### 2. Multi-Queue ≠ 四倍頻寬
-
-NVMe 的 64 個 queue 意味著可以同時 outstanding 很多 request，但不代表每個 queue 都有獨立頻寬。所有 queue 共享同一個 PCIe x4 通道：
+標準 LVM striping / md RAID0 使用統一 stripe size，每顆碟每 cycle 拿**相同數量的 chunk**。快碟被迫等慢碟：
 
 ```
-PCIe x4 Gen3 = 3940 MB/s（理論上限）
-PCIe x4 Gen4 = 7880 MB/s（理論上限）
-
-所有 queue 加起來，總頻寬仍然是 PCIe 的上限。
-不是 2000 × 4 = 8000 MB/s。
+NVMe 2000 MB/s: [64KB] → 0.032ms → 等待中...
+SATA 500 MB/s:  [64KB] → 0.128ms → 進行中...
+NVMe 每 cycle 空等 75% 的時間。
 ```
 
-### 3. 沒有核心層級的保證
-
-LVM md RAID0 的 striping 是**固定大小、round-robin**，沒有「加權 striping（weighted striping）」的概念。你無法指定「NVMe 拿 4 個 chunk，SATA 拿 1 個 chunk」。
-
-**結論：Partition Splitting 是一個看似合理但缺乏可靠理論和核心保證的做法。**
+需要一種方式，讓快碟拿更多 chunk，慢碟拿較少 chunk，使大家同時完成。
 
 ---
 
-## 正確解法：Weighted Striping Scheduler
-
-如果 TieredVol 自己控制 I/O 排程，就能真正實現 4:1:1 加權 striping。
-
-### 架構
+## 核心概念：加權 Chunk
 
 ```
-Application
-     ↓
-TieredVol Scheduler
-     ↓
-io_uring / AIO
-     ↓
-NVMe ← 256KB
-SATA1 ← 64KB
-SATA2 ← 64KB
+NVMe  2000 MB/s → 4 chunks per cycle (4 × 64KB = 256KB)
+SATA   500 MB/s → 1 chunk per cycle  (1 × 64KB = 64KB)
+
+時間：
+  NVMe: 256KB / 2000 MB/s = 0.128ms
+  SATA:  64KB / 500 MB/s  = 0.128ms
+  → 兩者同時完成
 ```
 
-TieredVol 不是 RAID，而是一個 **I/O Scheduler**。它決定每個 disk 拿多少資料，然後直接對底層裝置發送 I/O。
+**快碟拿多、慢碟拿少，整體吞吐量接近各碟速度總和。**
+
+---
+
+## 演算法：Step by Step
 
 ### Step 1：Benchmark 取得速度
 
 ```
-NVMe  = 2000 MB/s
-SATA1 = 500 MB/s
-SATA2 = 500 MB/s
+Disk A: NVMe   3000 MB/s
+Disk B: NVMe   1500 MB/s
+Disk C: SATA   1000 MB/s
+Disk D: SATA    500 MB/s
 ```
 
-### Step 2：計算 Weight
-
-以最慢碟為基準，計算比例：
+### Step 2：計算 Weight（除以最慢碟）
 
 ```
-ratio = disk_speed / slowest_speed
+slowest = 500 MB/s
 
-NVMe  = 2000 / 500 = 4
-SATA1 = 500 / 500  = 1
-SATA2 = 500 / 500  = 1
+A: 3000 / 500 = 6
+B: 1500 / 500 = 3
+C: 1000 / 500 = 2
+D:  500 / 500 = 1
 
-weight = [4, 1, 1]
+weight = [6, 3, 2, 1]
 ```
 
-### Step 3：決定 Chunk Size
+每輪共 `6+3+2+1 = 12` chunks。如果 chunk=64KB，一輪 768KB。
 
-固定 chunk size（例如 64KB），每輪共寫：
-
-```
-total_chunks = 4 + 1 + 1 = 6
-stripe_size  = 6 × 64KB = 384KB per cycle
-```
-
-每輪的分配：
-```
-NVMe:   4 × 64KB = 256KB
-SATA1:  1 × 64KB = 64KB
-SATA2:  1 × 64KB = 64KB
-─────────────────────────
-合計:             384KB
-```
-
-時間驗證：
-```
-NVMe:  256KB / 2000 MB/s ≈ 0.128ms
-SATA1: 64KB / 500 MB/s   ≈ 0.128ms
-SATA2: 64KB / 500 MB/s   ≈ 0.128ms
-三者同時完成 → 沒有等待
-```
-
-### Step 4：Dispatch I/O
-
-使用 io_uring 同時送出，不等第一個完成：
+### Step 3：Dispatch
 
 ```
-io_uring_submit:
-  SQE[0]: write(NVMe,  256KB, offset=N)
-  SQE[1]: write(SATA1, 64KB,  offset=M)
-  SQE[2]: write(SATA2, 64KB,  offset=P)
+A A A A A A | B B B | C C | D
+384KB        | 192KB | 128KB | 64KB
 ```
 
-Kernel 同時發出三個 I/O。
-
-### Step 5：等全部完成
-
-等 CQE（Completion Queue Entry）：
-
-```
-NVMe  Done
-SATA1 Done
-SATA2 Done
-```
-
-全部完成 → 開始下一輪 Stripe2。
+大家幾乎同時完成。
 
 ---
 
-## Offset 計算（核心）
+## 奇怪的速度怎麼辦？
 
-任何 logical offset 都能快速定位到正確的碟和碟內 offset。
-
-### 計算公式
+例如兩顆碟：
 
 ```
-stripe_size = sum(weight) × chunk_size = 6 × 64KB = 384KB
+NVMe:  1234 MB/s
+SATA:   480 MB/s
 
-stripe_no    = logical_offset / stripe_size
-offset_in    = logical_offset % stripe_size
-disk_index   = offset_in / chunk_size   （但要注意 weight 累加）
-disk_offset  = stripe_no × disk_weight × chunk_size + (offset_in % disk_weight × chunk_size)
+比例 = 1234 / 480 = 2.5708...
 ```
 
-### 具體範例
+不可能存 2.5708333... 一定需要近似整數。
+
+### 方法：搜尋最小誤差的整數比
+
+限制最大 weight（例如 8），搜尋所有可能的整數比：
+
+| 比例 | 近似值 | 誤差 |
+|------|--------|------|
+| 2:1 | 2.0 | 22% |
+| 3:1 | 3.0 | 16% |
+| 5:2 | 2.5 | **2.8%** |
+| 8:3 | 2.667 | 3.7% |
+
+選誤差最小的 → **5:2**。
+
+### 搜尋演算法
+
+```c
+int best_a = 1, best_b = 1;
+double best_err = fabs(target - 1.0);
+
+for (int a = 1; a <= max_weight; a++) {
+    for (int b = 1; b <= max_weight; b++) {
+        double approx = (double)a / b;
+        double err = fabs(target - approx) / target;
+        if (err < best_err) {
+            best_err = err;
+            best_a = a;
+            best_b = b;
+        }
+    }
+}
+
+// target = 2.5708 → best_a=5, best_b=2 → 5:2 (2.5, 誤差 2.8%)
+```
+
+### 三顆碟的情況
 
 ```
-chunk_size = 64KB
-weight = [4, 1, 1]
-stripe_size = 384KB
+3178, 947, 653 MB/s
 
-Logical Offset = 1MB = 1024KB
+除以最慢：
+  4.86, 1.45, 1.0
 
-stripe_no = 1024 / 384 = 2
-offset_in = 1024 % 384 = 256
-
-Disk 分佈（stripe 內的 offset）：
-  0 ~ 255KB  → NVMe    (weight=4, 範圍 0~255)
-  256 ~ 319KB → SATA1  (weight=1, 範圍 256~319)
-  320 ~ 383KB → SATA2  (weight=1, 範圍 320~383)
-
-offset_in = 256 → 落在 SATA1 範圍
-disk_offset = 2 × 1 × 64KB + (256 - 256) = 128KB
+搜尋整數近似 → 可能得到 [10, 3, 2] 或 [5, 2, 1]
+都可以。
 ```
-
-因此：Logical 1MB → SATA1 的 offset 128KB。
-
-### 查表加速
-
-程式不需要每次算數學，可以用預計算的 prefix sum table：
-
-```
-disk_boundary[0] = 0          (NVMe start)
-disk_boundary[1] = 4 × 64 = 256   (SATA1 start)
-disk_boundary[2] = 5 × 64 = 320   (SATA2 start)
-disk_boundary[3] = 6 × 64 = 384   (stripe end)
-```
-
-binary search 即可快速定位。
 
 ---
 
-## Metadata
+## 容量不同怎麼辦？分段處理
 
-只需要保存：
+### 問題
+
+如果四顆碟容量不同：
+
+| Disk | 容量 | 速度 |
+|------|------|------|
+| A | 1TB | 3000 MB/s |
+| B | 1TB | 1500 MB/s |
+| C | 512GB | 1000 MB/s |
+| D | 2TB | 500 MB/s |
+
+C 只有 512GB，A 和 B 有 1TB。當 C 用完後，剩下三顆碟的比例就不同了。
+
+### 解法：依容量排序，分段
 
 ```
-chunk_size:  64KB
-weight:      [4, 1, 1]
-disk_list:   [nvme0n1, sda, sdb]
+512GB → 1TB → 2TB
+ │       │      │
+段 1     段 2    段 3
 ```
 
-即可由公式計算所有映射，**不需要記錄每個 block 的位置**。
+#### 段 1（0 ~ 512GB）：四顆都有空間
+
+```
+速度：3000, 1500, 1000, 500
+比例：6:3:2:1
+一輪：12 chunks × 64KB = 768KB
+```
+
+#### 段 2（512GB ~ 1TB）：C 用完了
+
+```
+剩：A(3000), B(1500), D(500)
+比例：6:3:1
+一輪：10 chunks × 64KB = 640KB
+```
+
+#### 段 3（1TB ~ 2TB）：A、B 都用完了
+
+```
+只剩 D → 直接線性寫入
+```
+
+### 實作
+
+```
+1. 取得每顆碟的容量和速度
+2. 按容量排序
+3. 計算每個分段的起始/結束 offset
+4. 每個分段內，重新計算 weight
+5. dispatch 時判斷 offset 落在哪个分段，使用該分段的 weight
+```
 
 ---
 
-## Partial Stripe 處理
+## 動態比例（進階）
 
-應用程式不一定寫 384KB 的整數倍。例如寫 100KB、10KB、70KB。
+不一定要用固定 weight。每次 dispatch 時，動態計算每顆碟「理論上應該拿多少資料」。
 
-### 方案 A：Buffer（推薦）
-
-TieredVol 內部維護一個 buffer：
+### 範例：600KB 需要寫入
 
 ```
-寫入 100KB → buffer 收下
-寫入 70KB  → buffer 累積 170KB
-寫入 214KB → buffer 累積 384KB → dispatch 整個 stripe
+速度：NVMe 1234 MB/s, SATA 480 MB/s
+總速度：1714 MB/s
+
+NVMe 應拿：600 × 1234/1714 = 432KB
+SATA 應拿：600 × 480/1714  = 168KB
+
+對齊到 64KB chunk：
+  NVMe → 448KB (7 chunks)
+  SATA → 192KB (3 chunks)
 ```
 
-- 優點：永遠 dispatch 完整 stripe，offset 計算簡單
-- 缺點：增加延遲（要等 buffer 滿），需要額外記憶體
+### 優點
 
-### 方案 B：Partial Stripe
+- 不需要事先算固定 weight
+- 每一輪都可以依實際速度重新分配
+- 如果某顆碟速度下降（溫度、SLC Cache 用盡），下一輪自動調整
 
-允許不完整的 stripe，但 metadata 需要記錄：
+### 缺點
 
-```
-stripe_no | disk | offset | length
-2         | NVMe | 0      | 100KB
-```
-
-- 優點：低延遲，不需要 buffer
-- 缺點：metadata 複雜，讀取時需要拼接
+- 每輪都要算一次，稍微多一點 CPU
+- 不同輪的分配比例可能不同，增加了複雜度
 
 ### 建議
 
-TieredVol 先實作 **方案 A（Buffer）**，簡單可靠。未來可擴充方案 B。
+**先實作固定 weight（Step 2 ~ Step 3）**，簡單可靠。動態比例留作未來優化。
 
 ---
 
-## 讀取流程
-
-與寫入相同：
+## 整合到 TieredVol
 
 ```
-io_uring_submit:
-  SQE[0]: read(NVMe,  256KB, offset=N)
-  SQE[1]: read(SATA1, 64KB,  offset=M)
-  SQE[2]: read(SATA2, 64KB,  offset=P)
-```
+tiered_setup --create --name fastpool --disks nvme0n1:500,sda:500,sdb:500
 
-等全部完成 → 依 offset 組回 buffer。
-
----
-
-## 效能對比
-
-| 方法 | NVMe 每 cycle | SATA 每 cycle | 等待時間 | 預估速度 |
-|------|-------------|-------------|---------|---------|
-| 標準 LVM striping | 64KB | 64KB | NVMe 等 0.096ms | ~1000 MB/s |
-| Partition splitting（不可靠） | 256KB | 64KB | 有風險 | 不確定 |
-| **Weighted Striping Scheduler** | **256KB** | **64KB** | **≈ 0** | **~2500 MB/s** |
-
----
-
-## 實作架構
-
-```
-TieredVol/
-├── scheduler/
-│   ├── weighted_io.c      # I/O scheduler 核心
-│   ├── offset_map.c       # Logical → Physical offset 映射
-│   ├── stripe_buffer.c    # Partial stripe buffer
-│   └── io_uring_dispatch.c # io_uring 送出/回收
-├── tiered_setup.c         # CLI（加入 --scheduler 模式）
-└── tiered_ui.c            # TUI（加入 scheduler 狀態顯示）
-```
-
-### API 概念
-
-```c
-// 初始化 scheduler
-tiered_sched_t *sched = tiered_sched_init(disks, ndisks, chunk_size);
-
-// 寫入（自動 buffer + dispatch）
-tiered_sched_write(sched, data, length);
-
-// 讀取
-tiered_sched_read(sched, buf, length, offset);
-
-// 清理
-tiered_sched_destroy(sched);
+程式內部：
+  1. benchmark → 取得速度
+  2. 計算 weight
+  3. 儲存 weight + chunk_size 到 metadata
+  4. dispatch 時查 weight → 每顆碟拿幾 chunks
 ```
 
 ---
 
-## 為什麼 LVM/md RAID 做不到？
+## 總結
 
-LVM 和 md RAID0 的 striping 是**固定大小、round-robin**：
-
-```
-LVM: chunk → D1, chunk → D2, chunk → D3, chunk → D1...
-md:  chunk → D1, chunk → D2, chunk → D3, chunk → D1...
-```
-
-它們沒有「加權 striping（weighted striping）」的概念，無法指定「NVMe 拿 4 個 chunk，SATA 拿 1 個 chunk」。
-
-要實現真正的加權 striping，需要：
-1. 自己控制 I/O dispatch（不依賴 LVM/md）
-2. 使用 async I/O（io_uring / AIO）同時送出多個 request
-3. 自己管理 offset 映射和 metadata
-
-**TieredVol 作為 I/O Scheduler，正好可以做到這些。**
-
----
-
-## 實作難度
-
-| 項目 | 難度 | 說明 |
-|------|------|------|
-| Weight 計算 | 簡單 | 數學運算 |
-| Offset 映射 | 簡單 | prefix sum + binary search |
-| io_uring dispatch | 中等 | 需要 liburing 或直接 syscall |
-| Stripe buffer | 中等 | Ring buffer + flush 機制 |
-| Partial stripe | 中等 | 方案 A 簡單，方案 B 複雜 |
-| 錯誤處理 | 中等 | I/O 失敗要 retry 或 rollback |
+| 問題 | 解法 |
+|------|------|
+| 快碟等慢碟 | 加權 chunk：快碟拿多、慢碟拿少 |
+| 奇怪的速度比例 | 搜尋最小誤差的整數比（限制 max_weight） |
+| 碟容量不同 | 依容量排序，分段處理 |
+| 動態速度變化 | 每輪動態計算比例（進階） |
 
 ---
 
 ## 參考
 
-- io_uring: `io_uring_setup`, `io_uring_enter`, liburing
-- Linux block layer: `drivers/block/`
-- NVMe multi-queue: `drivers/nvme/host/`
-- Weighted striping 概念: 本文件原創（TieredVol project）
+- Weighted striping 概念：本文件原創（TieredVol project）
+- Ratio 近似演算法：brute-force search with max_weight constraint
+- 相關文件：[WEIGHTED_IO_SCHEDULER.md](WEIGHTED_IO_SCHEDULER.md)（I/O dispatch 實作）

@@ -83,7 +83,7 @@ sdb (慢):           [chunk1]         [chunk3]         [chunk5]...
 
 **重要：混合速度碟（NVMe + SATA）**
 
-當組合不同速度的硬碟時，實際吞吐量受限於最慢的碟。LVM 對所有碟使用相同的 stripe size，所以較快的碟會空等較慢的碟。例如 NVMe（2000 MB/s）+ SATA（500 MB/s）實際只有 ~1000 MB/s，不是 2500 MB/s。詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md) 了解 Weighted Striping Scheduler 提案，可達到接近理論值的速度。
+當組合不同速度的硬碟時，實際吞吐量受限於最慢的碟。LVM 對所有碟使用相同的 stripe size，所以較快的碟會空等較慢的碟。例如 NVMe（2000 MB/s）+ SATA（500 MB/s）實際只有 ~1000 MB/s，不是 2500 MB/s。詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md) 了解加權切塊演算法，[WEIGHTED_IO_SCHEDULER.md](WEIGHTED_IO_SCHEDULER.md) 了解 I/O dispatch 實作。
 
 **如何接近理論速度：**
 
@@ -275,7 +275,8 @@ TieredVol/
 │   ├── README_CN.md            # 說明文件（中文，本檔案）
 │   ├── USAGE.md                # 詳細使用教學
 │   ├── PLAN.md                 # 改善計畫
-│   └── PARTITION_SPLITTING.md  # 按碟速度比例分配 stripe
+│   ├── PARTITION_SPLITTING.md  # 加權切塊演算法
+│   └── WEIGHTED_IO_SCHEDULER.md # I/O dispatch 實作
 ├── scripts/
 │   ├── tieredvol-restore.sh    # 開機還原腳本
 │   └── tieredvol-restore.service  # systemd 單元檔

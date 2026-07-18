@@ -78,8 +78,9 @@
 
 ### 10. Weighted Striping Scheduler — 按碟速度比例分配 I/O
 - **問題**：LVM striping 用同一個 stripe size，快碟被迫等慢碟，`2000+1000≠3000`
-- **做法**：TieredVol 自己做 I/O Scheduler（io_uring），按 4:1:1 比例直接 dispatch
-- **原理**：詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)
+- **做法**：TieredVol 自己做 I/O Scheduler（io_uring），按速度比例直接 dispatch
+- **演算法**：詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)（切塊計算）
+- **實作**：詳見 [WEIGHTED_IO_SCHEDULER.md](WEIGHTED_IO_SCHEDULER.md)（I/O dispatch）
 - **難度**：中等（需要 io_uring dispatch、stripe buffer、offset 映射）
 
 ### 11. Stripe Size 智慧選擇
