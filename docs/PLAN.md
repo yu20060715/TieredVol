@@ -16,6 +16,7 @@
 | P1-5 | kill() → killpg() | `e89a2f1` |
 | P1-6 | TOCTOU 修復（sudo cp → sudo mv） | `1badcba` |
 | P0-extra | 步進 50GB → 1GB | `e89a2f1` |
+| P3-12 | README 速度限制說明 | `ac2f013` |
 
 ---
 
@@ -77,18 +78,19 @@
 ## 🔵 P3：進階功能（未來）
 
 ### 10. Weighted Striping Scheduler — 按碟速度比例分配 I/O
-- **問題**：LVM striping 用同一個 stripe size，快碟被迫等慢碟，`2000+1000≠3000`
+- **問題**：LVM striping 用同一個 stripe size，快碟被迫等慢碟，`1000+500+500≠1800`
 - **做法**：TieredVol 自己做 I/O Scheduler（io_uring），按速度比例直接 dispatch
 - **演算法**：詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)（切塊計算）
 - **實作**：詳見 [WEIGHTED_IO_SCHEDULER.md](WEIGHTED_IO_SCHEDULER.md)（I/O dispatch）
-- **難度**：中等（需要 io_uring dispatch、stripe buffer、offset 映射）
+- **實作指南**：詳見 [AGENTS.md](../AGENTS.md)（完整程式碼 + 實作順序）
+- **難度**：高（~20 小時，需要 io_uring dispatch、stripe buffer、offset 映射、7 個新 .c 檔案）
 
 ### 11. Stripe Size 智慧選擇
 - **問題**：現在用 `has_sata ? 512 : 64` 的簡單判斷，沒有根據實際速度
 - **做法**：根據碟速度差距更智慧地選擇 stripe size（例如全 NVMe 但速度差距大也用 512）
 - **難度**：簡單
 
-### 12. README 說明 LVM striping 速度限制
+### 12. README 說明 LVM striping 速度限制 ✅
 - **問題**：README 暗示 `2000+1000=3000`，但實際會被慢碟拖累
 - **做法**：在 README 加入速度限制說明，引導使用者閱讀 PARTITION_SPLITTING.md
 - **難度**：簡單（文件）
@@ -109,4 +111,4 @@
 - [ ] P2-9: Config 路徑可配置
 - [ ] P3-10: Partition splitting 按速度比例
 - [ ] P3-11: Stripe size 智慧選擇
-- [ ] P3-12: README 速度限制說明
+- [x] P3-12: README 速度限制說明

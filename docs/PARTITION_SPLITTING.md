@@ -6,23 +6,11 @@
 
 ## 資料結構
 
+所有 struct 定義在 `src/tiered_sched.h`。以下是說明：
+
 ### TV_DISK
 
-```c
-typedef struct {
-    int      id;
-    int      fd;
-
-    uint64_t total_size;    // 碟總容量（bytes）
-    uint64_t free_size;     // 碟可用容量（bytes）
-
-    uint64_t speed;         // 測速結果（MB/s）
-
-    uint32_t weight;        // 加權值
-
-    uint64_t physical_offset;  // 在 partition 內的物理起始位置
-} TV_DISK;
-```
+碟資訊：id, fd, 容量, 可用容量, 速度, 權重, 物理 offset, 碟名。
 
 初始化流程：
 ```
@@ -214,18 +202,9 @@ C 只有 512GB，A 和 B 有 1TB。當 C 用完後，剩下三顆碟的比例就
 
 ### TV_SEGMENT
 
-```c
-typedef struct {
-    uint64_t logical_begin;    // 此段的邏輯起始 offset
-    uint64_t logical_end;      // 此段的邏輯結束 offset
+分段資訊：邏輯 offset 範圍, 碟數量, 碟 index 陣列, 權重陣列, stripe size。
 
-    uint32_t disk_count;       // 此段內有幾顆碟
-    uint32_t disk_index[16];   // 碟的 index
-    uint32_t weight[16];       // 每顆碟的權重
-
-    uint64_t stripe_size;      // 此段的 stripe size
-} TV_SEGMENT;
-```
+定義見 `src/tiered_sched.h`。
 
 #### 範例
 
@@ -288,15 +267,7 @@ SATA 應拿：600 × 480/1714  = 168KB
 
 ## Metadata
 
-```c
-typedef struct {
-    uint32_t version;
-    uint32_t chunk_size;        // 固定 64KB
-    uint32_t segment_count;
-
-    TV_SEGMENT segments[MAX_SEG];
-} TV_METADATA;
-```
+Metadata 結構定義在 `src/tiered_sched.h`（TV_METADATA）。
 
 儲存格式：
 ```
@@ -305,10 +276,17 @@ typedef struct {
 version=1
 chunk_size=65536
 segment_count=3
-# Segment 0: 0~1TB
+disk_count=4
+disk0_name=nvme0n1
+disk1_name=sda
+disk2_name=sdb
+disk3_name=sdc
+seg0_begin=0
+seg0_end=1073741824
+seg0_count=4
 seg0_disks=0,1,2,3
 seg0_weight=7,4,2,1
-seg0_stripe_size=896KB
+seg0_stripe=917504
 # ... 其他 segments
 ```
 
@@ -317,17 +295,13 @@ seg0_stripe_size=896KB
 ## Runtime Mapping API
 
 ```c
-typedef struct {
-    int      disk;        // 目標碟的 index
-    uint64_t offset;      // 在該碟上的物理 offset
-    uint64_t length;      // 要讀寫的長度
-} TV_MAP;
+// 定義在 src/tiered_sched.h
 
-TV_MAP map_logical_offset(
-    uint64_t logical,     // 邏輯 offset
-    uint64_t length       // 長度
-);
+TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta);
 ```
+
+輸入：logical offset
+輸出：TV_MAP（disk index, physical offset, length）
 
 Mapping 流程：
 ```

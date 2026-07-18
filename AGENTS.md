@@ -153,6 +153,11 @@ typedef struct {
     uint32_t version;
     uint32_t chunk_size;
     uint32_t segment_count;
+
+    // Disk info（needed for metadata save/load）
+    uint32_t disk_count;
+    char     disk_names[TV_MAX_DISKS][64];
+
     TV_SEGMENT segments[TV_MAX_SEGS];
 } TV_METADATA;
 
@@ -329,20 +334,12 @@ TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {
 #### tiered_stripe_buf.c
 
 ```c
-// Buffer 管理
+// Buffer 管理（使用 TV_BUFFER from tiered_sched.h）
 // 固定大小 = stripe_size
 
-typedef struct {
-    uint8_t *data;
-    uint64_t capacity;   // stripe_size
-    uint64_t used;
-    uint64_t logical_begin;
-} TV_STRIPE_BUF;
-
 // 初始化
-int tv_buf_init(TV_STRIPE_BUF *buf, uint64_t stripe_size) {
+int tv_buf_init(TV_BUFFER *buf, uint64_t stripe_size) {
     buf->data = aligned_alloc(512, stripe_size);
-    buf->capacity = stripe_size;
     buf->used = 0;
     buf->logical_begin = 0;
     return 0;
@@ -350,18 +347,18 @@ int tv_buf_init(TV_STRIPE_BUF *buf, uint64_t stripe_size) {
 
 // 寫入（copy to buffer）
 // 回傳：0 = 正常, 1 = buffer 滿了需要 flush
-int tv_buf_write(TV_STRIPE_BUF *buf, const void *data, uint64_t len) {
-    uint64_t space = buf->capacity - buf->used;
+int tv_buf_write(TV_BUFFER *buf, const void *data, uint64_t len, uint64_t capacity) {
+    uint64_t space = capacity - buf->used;
     if (len > space) len = space;
     memcpy(buf->data + buf->used, data, len);
     buf->used += len;
-    return (buf->used == buf->capacity) ? 1 : 0;
+    return (buf->used == capacity) ? 1 : 0;
 }
 
 // 重置
-void tv_buf_reset(TV_STRIPE_BUF *buf) {
+void tv_buf_reset(TV_BUFFER *buf, uint64_t capacity) {
     buf->used = 0;
-    buf->logical_begin += buf->capacity;
+    buf->logical_begin += capacity;
 }
 ```
 
@@ -456,22 +453,37 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
 }
 
 int tv_flush(TV_SCHED *sched) {
+    // 找到目前 logical offset 對應的 segment
+    uint64_t logical = sched->buf.logical_begin;
+    TV_MAP map = tv_map_logical(logical, sched->meta);
     TV_SEGMENT *seg = &sched->meta->segments[0];  // 簡化，只用第一個 segment
+
     size_t buf_pos = 0;
 
     for (int i = 0; i < seg->disk_count; i++) {
         uint64_t disk_bytes = seg->weight[i] * TV_CHUNK_SIZE;
         if (disk_bytes == 0) continue;
 
-        // 計算 physical offset
-        TV_MAP map = tv_map_logical(sched->buf.logical_begin + buf_pos, sched->meta);
+        // 計算每顆碟的 physical offset
+        // 使用 offset mapping 避免每次呼叫 tv_map_logical
+        uint64_t stripe_no = logical / seg->stripe_size;
+
+        // prefix sum boundary
+        uint64_t boundary[TV_MAX_DISKS + 1];
+        boundary[0] = 0;
+        for (int j = 0; j < seg->disk_count; j++) {
+            boundary[j+1] = boundary[j] + seg->weight[j] * TV_CHUNK_SIZE;
+        }
+
+        // disk i 的 physical offset
+        uint64_t disk_off = stripe_no * seg->weight[i] * TV_CHUNK_SIZE;
 
         // 送 io_uring write
         tv_uring_write(&sched->ring,
-                       sched->disks[map.disk].fd,
+                       sched->disks[seg->disk_index[i]].fd,
                        sched->buf.data + buf_pos,
                        disk_bytes,
-                       map.offset);
+                       disk_off);
 
         buf_pos += disk_bytes;
     }
@@ -488,18 +500,19 @@ int tv_flush(TV_SCHED *sched) {
     }
 
     // 重置 buffer
-    tv_buf_reset(&sched->buf);
+    tv_buf_reset(&sched->buf, sched->meta->segments[0].stripe_size);
     return 0;
 }
 
 int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
     uint8_t *dst = buf;
     uint64_t pos = 0;
+    int pending = 0;
 
     while (pos < len) {
         TV_MAP map = tv_map_logical(offset + pos, sched->meta);
         uint64_t chunk = len - pos;
-        if (chunk > TV_CHUNK_SIZE) chunk = TV_CHUNK_SIZE;
+        if (chunk > map.length) chunk = map.length;
 
         tv_uring_read(&sched->ring,
                       sched->disks[map.disk].fd,
@@ -507,12 +520,18 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
                       chunk,
                       map.offset);
         pos += chunk;
+        pending++;
     }
 
+    // Submit 所有 requests
     tv_uring_submit(&sched->ring);
 
-    for (uint64_t i = 0; i < (len + TV_CHUNK_SIZE - 1) / TV_CHUNK_SIZE; i++) {
-        tv_uring_wait(&sched->ring);
+    // 等全部完成
+    for (int i = 0; i < pending; i++) {
+        int res = tv_uring_wait(&sched->ring);
+        if (res < 0) {
+            // I/O 失敗處理
+        }
     }
 
     return 0;
@@ -548,6 +567,11 @@ int tv_metadata_save(TV_METADATA *meta, const char *path) {
     fprintf(f, "version=%u\n", meta->version);
     fprintf(f, "chunk_size=%u\n", meta->chunk_size);
     fprintf(f, "segment_count=%u\n", meta->segment_count);
+    fprintf(f, "disk_count=%u\n", meta->disk_count);
+
+    for (int i = 0; i < meta->disk_count; i++) {
+        fprintf(f, "disk%d_name=%s\n", i, meta->disk_names[i]);
+    }
 
     for (int i = 0; i < meta->segment_count; i++) {
         TV_SEGMENT *seg = &meta->segments[i];
@@ -556,7 +580,7 @@ int tv_metadata_save(TV_METADATA *meta, const char *path) {
         fprintf(f, "seg%d_count=%u\n", i, seg->disk_count);
         fprintf(f, "seg%d_disks=", i);
         for (int j = 0; j < seg->disk_count; j++) {
-            fprintf(f, "%s%s", j ? "," : "", /* disk name */);
+            fprintf(f, "%s%u", j ? "," : "", seg->disk_index[j]);
         }
         fprintf(f, "\n");
         fprintf(f, "seg%d_weight=", i);

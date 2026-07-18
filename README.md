@@ -19,8 +19,10 @@ Disk A (NVMe, 2000 MB/s) ──dm-linear──┐
 Disk B (SATA, 1000 MB/s) ──dm-linear──┤── LVM VG ── striped LV ── filesystem ── mount
                                        │
                                        ▼
-                                  ~3000 MB/s
+                                  ~3000 MB/s (same-speed disks)
 ```
+
+> **Mixed-speed disks?** When combining NVMe + SATA, LVM striping is limited by the slowest disk. See [Weighted Striping](#weighted-striping-scheduler) below.
 
 ## Core Concept: Carve Custom Capacity
 
@@ -84,6 +86,34 @@ Both disks are active at the same time. The kernel sends I/O requests to all dis
 **Important: Mixed-speed disks (NVMe + SATA)**
 
 When combining disks of different speeds, the actual throughput is limited by the slowest disk. LVM uses the same stripe size for all disks, so faster disks idle while waiting for slower ones. For example, NVMe (2000 MB/s) + SATA (500 MB/s) yields ~1000 MB/s, not 2500 MB/s. See [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) for the weighted striping algorithm, and [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) for the I/O dispatch implementation.
+
+## Weighted Striping Scheduler
+
+**Status: In Development (Phase 2)**
+
+TieredVol is building a custom I/O Scheduler that replaces LVM striping for mixed-speed disks. Instead of giving each disk the same amount of data per cycle, it assigns chunks proportional to each disk's speed:
+
+```
+NVMe  3100 MB/s → 7 chunks = 448KB
+SATA  1700 MB/s → 4 chunks = 256KB
+SATA   800 MB/s → 2 chunks = 128KB
+SATA   450 MB/s → 1 chunk  =  64KB
+
+All disks finish at the same time → throughput approaches sum of all disks
+```
+
+```bash
+# Create volume with weighted striping
+sudo tiered_setup --create --name fastpool \
+    --disks nvme0n1:1000,sda:500,sdb:500 \
+    --scheduler \
+    --fs ext4 --mount /mnt/fast
+```
+
+For implementation details, see:
+- [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) — Weight calculation, capacity segmentation, offset mapping
+- [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — Three-layer architecture, io_uring dispatch, stripe buffer, pitfalls
+- [AGENTS.md](AGENTS.md) — Full implementation guide with code for every module
 
 **How to get closest to theoretical speed:**
 
@@ -149,21 +179,22 @@ Any step failure during volume creation (dmsetup / pvcreate / vgcreate / lvcreat
 
 ## Requirements
 
-- Linux (tested on Ubuntu 24.04, kernel 6.14)
+- Linux (kernel 5.1+ for io_uring support)
 - `lvm2` `dmsetup` `libncurses-dev` `gcc` `make`
+- `liburing-dev` (for Weighted Striping Scheduler, optional)
 - Root privileges (sudo)
 
 ### Install Dependencies
 
 ```bash
 # Debian / Ubuntu
-sudo apt install lvm2 libncurses-dev gcc make
+sudo apt install lvm2 libncurses-dev gcc make liburing-dev
 
 # Fedora / RHEL
-sudo dnf install lvm2 ncurses-devel gcc make
+sudo dnf install lvm2 ncurses-devel gcc make liburing-devel
 
 # Arch
-sudo pacman -S lvm2 ncurses gcc make
+sudo pacman -S lvm2 ncurses gcc make liburing
 ```
 
 ## Quick Start
@@ -215,6 +246,9 @@ sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --m
 
 # Create striped volume (full sda + 500G from sdb)
 sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mnt /mnt/pool
+
+# Create volume with weighted striping (mixed-speed disks)
+sudo tiered_setup --create --name fastpool --disks nvme0n1:500,sda:500 --scheduler --fs ext4 --mount /mnt/fast
 
 # View status
 sudo tiered_setup --status
@@ -270,9 +304,10 @@ sudo tiered_ui
 ```
 TieredVol/
 ├── README.md                   # This file (English)
+├── README_CN.md                # 中文說明
+├── AGENTS.md                   # Implementation guide for developers/AI
 ├── LICENSE                     # MIT License
 ├── docs/
-│   ├── README_CN.md            # Documentation (Chinese)
 │   ├── USAGE.md                # Detailed usage guide
 │   ├── PLAN.md                 # Improvement roadmap
 │   ├── PARTITION_SPLITTING.md  # Weighted striping algorithm
@@ -303,6 +338,21 @@ TieredVol/
 | `tiered_ui_helpers.h` | `ui_disk_t` struct, `parse_bench_output()`, `bench_disk_done()` |
 | `tieredvol-restore.sh` | Boot restore script: reads `/etc/tieredvol/*.conf` and rebuilds dm-linear + LVM volumes |
 | `tieredvol-restore.service` | systemd unit: triggers restore script after local filesystem is mounted |
+
+### Phase 2: Weighted Striping (In Development)
+
+| Module | Responsibility |
+|--------|---------------|
+| `tiered_sched.h` | All struct definitions (TV_DISK, TV_SEGMENT, TV_METADATA, TV_MAP, TV_BUFFER, TV_SCHED) and API declarations |
+| `tiered_sched.c` | Scheduler core: init, write (buffer + flush), read (mapping + io_uring), destroy |
+| `tiered_mapper.c` | Logical ↔ Physical offset mapping (prefix sum + binary search) |
+| `tiered_stripe_buf.c` | Stripe buffer management (ring buffer, flush when full) |
+| `tiered_io_uring.c` | io_uring wrapper (SQE/CQE, submit, wait) |
+| `tiered_benchmark.c` | Disk speed benchmark (O_DIRECT, 3 runs average) |
+| `tiered_partition.c` | Weight calculation, capacity segmentation, segment building |
+| `tiered_metadata.c` | Metadata save/load (text config files in /etc/tieredvol/) |
+
+See [AGENTS.md](AGENTS.md) for complete implementation details with code for every module.
 
 ## Notes
 

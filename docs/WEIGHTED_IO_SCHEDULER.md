@@ -130,66 +130,15 @@ TieredVol 內部維護 ring buffer：
 寫入 468KB → buffer: [768KB / 768KB] → flush → dispatch
 ```
 
-```c
-typedef struct {
-    char     *buf;
-    size_t    capacity;    // stripe_size
-    size_t    used;
-    off_t     base_offset; // stripe 起始 logical offset
-} stripe_buffer_t;
-
-int tiered_sched_write(tiered_sched_t *sched, const void *data, size_t len) {
-    size_t pos = 0;
-    while (pos < len) {
-        size_t space = sched->stripe_size - sched->buf.used;
-        size_t chunk = (len - pos < space) ? (len - pos) : space;
-        memcpy(sched->buf.buf + sched->buf.used, data + pos, chunk);
-        sched->buf.used += chunk;
-        pos += chunk;
-
-        if (sched->buf.used == sched->stripe_size) {
-            flush_stripe(sched);
-        }
-    }
-    return 0;
+使用 `TV_BUFFER` struct（定義在 `src/tiered_sched.h`）。實作細節見 `AGENTS.md` 的 `tiered_stripe_buf.c` section。
 }
 ```
 
 ### flush_stripe：真正 dispatch
 
-```c
-void flush_stripe(tiered_sched_t *sched) {
-    // 根據 weight table，把 buf 切成各碟的 chunk
-    off_t offset = sched->buf.base_offset;
-    size_t buf_pos = 0;
+根據 weight table，把 buffer 切成各碟的 chunk，建 io_uring SQE，一次 submit。
 
-    for (int i = 0; i < sched->ndisks; i++) {
-        size_t disk_bytes = sched->weight[i] * sched->chunk_size;
-        if (disk_bytes == 0) continue;
-
-        // 送 io_uring write
-        io_uring_sqe_set_data(sqe, ...);
-        io_uring_prep_write(sqe, sched->disks[i].fd,
-                            sched->buf.buf + buf_pos,
-                            disk_bytes, disk_offset);
-
-        buf_pos += disk_bytes;
-    }
-
-    io_uring_submit(&sched->ring);
-
-    // 等全部完成
-    for (int i = 0; i < sched->ndisks; i++) {
-        struct io_uring_cqe *cqe;
-        io_uring_wait_cqe(&sched->ring, &cqe);
-        io_uring_cqe_seen(&sched->ring, cqe);
-    }
-
-    // 重置 buffer
-    sched->buf.used = 0;
-    sched->buf.base_offset += sched->stripe_size;
-}
-```
+完整實作見 `AGENTS.md` 的 `tv_flush()` section。
 
 ---
 
@@ -266,28 +215,15 @@ stripe_size=786432
 
 ## 資料結構
 
+所有 struct 定義在 `src/tiered_sched.h`。
+
 ### TV_SCHED
 
-```c
-typedef struct {
-    io_uring ring;
-
-    TV_METADATA *meta;     // 指向 metadata
-    TV_DISK     *disk;     // 碟陣列
-
-    TV_BUFFER buf;         // stripe buffer
-} TV_SCHED;
-```
+Scheduler 核心：io_uring ring, metadata 指標, 碟陣列, stripe buffer。
 
 ### TV_BUFFER
 
-```c
-typedef struct {
-    uint8_t *data;         // buffer 資料
-    uint64_t used;         // 目前使用量
-    uint64_t logical_begin; // 此 buffer 對應的邏輯起始 offset
-} TV_BUFFER;
-```
+Stripe buffer：data 指標, 使用量, 邏輯起始 offset。
 
 buffer 固定大小 = stripe_size（例如 896KB）。
 
@@ -512,27 +448,13 @@ fio --name=test --filename=/mnt/fast/test \
 
 ### 模組拆分
 
-```
-scheduler/
-├── benchmark.c          // 建立 Volume 時測速
-├── partition.c          // 建立 Segment、Weight、Metadata
-├── mapper.c             // Logical ↔ Physical 映射
-├── buffer.c             // Stripe Buffer 管理
-├── scheduler.c          // Write/Read 排程
-├── io_uring_backend.c   // SQE/CQE 封裝
-└── metadata.c           // Metadata 讀寫
-```
-
-### 對應到 TieredVol
+對應到 TieredVol 的 `src/` 目錄：
 
 ```
 src/
+├── tiered_sched.h          # 所有 struct + API 定義
 ├── tiered_sched.c          # Scheduler 核心
-│   ├── tiered_sched_init() # 初始化：建立 weight table、分配 buffer
-│   ├── tiered_sched_write()# 寫入：buffer + flush
-│   ├── tiered_sched_read() # 讀取：offset mapping + io_uring
-│   └── tiered_sched_destroy()
-├── tiered_offset_map.c     # Logical ↔ Physical offset 映射
+├── tiered_mapper.c         # Logical ↔ Physical offset 映射
 ├── tiered_stripe_buf.c     # Stripe buffer (ring buffer)
 ├── tiered_io_uring.c       # io_uring wrapper
 ├── tiered_benchmark.c      # 測速
@@ -544,13 +466,11 @@ src/
 
 ### API
 
+所有 API 定義在 `src/tiered_sched.h`。以下是簡要說明：
+
 ```c
 // 初始化
-TV_SCHED *tv_sched_init(
-    TV_DISK *disks, int ndisks,
-    uint32_t chunk_size,
-    const char *config_path   // 讀取 metadata
-);
+TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta);
 
 // 寫入（自動 buffer + dispatch）
 int tv_write(TV_SCHED *sched, const void *buf, uint64_t len);
@@ -565,8 +485,10 @@ int tv_flush(TV_SCHED *sched);
 void tv_sched_destroy(TV_SCHED *sched);
 
 // Offset Mapping（純數學，不碰 I/O）
-TV_MAP map_logical_offset(uint64_t logical, uint64_t len);
+TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta);
 ```
+
+完整實作見 `AGENTS.md`。
 
 ### 為什麼用 io_uring？
 
