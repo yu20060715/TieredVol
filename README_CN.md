@@ -236,7 +236,8 @@ TieredVol/
 │   ├── tiered_io_uring.c       # io_uring wrapper
 │   ├── tiered_benchmark.c      # 初始化 benchmark
 │   ├── tiered_partition.c      # Weight + segment 計算
-│   └── tiered_metadata.c       # Metadata 讀寫
+│   ├── tiered_metadata.c       # Metadata 讀寫
+│   └── tiered_io.c             # CLI I/O 工具（read/write/bench）
 └── tests/
     ├── test_common.c
     └── test_tui.c
