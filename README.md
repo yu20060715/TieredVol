@@ -249,7 +249,7 @@ TieredVol/
 | `tiered_setup.c` | CLI core: disk discovery, benchmark, dm-linear/LVM/scheduler create, rollback |
 | `tiered_ui.c` | TUI frontend: 7 screens, create wizard, benchmarking, RAM cache tuning |
 | `tiered_sched.c` | Scheduler core: init, write (buffer + flush), read (mapping + io_uring), destroy |
-| `tiered_mapper.c` | Logical ↔ Physical offset mapping (prefix sum + binary search) |
+| `tiered_mapper.c` | Logical ↔ Physical offset mapping (prefix sum + linear scan) |
 | `tiered_stripe_buf.c` | Stripe buffer management (ring buffer, flush when full) |
 | `tiered_io_uring.c` | io_uring wrapper (SQE/CQE, submit, wait) |
 | `tiered_benchmark.c` | Initialization benchmark (O_DIRECT, 3 runs average) — **not a storage benchmark** |

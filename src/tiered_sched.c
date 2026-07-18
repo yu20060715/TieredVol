@@ -5,6 +5,7 @@
 
 TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
     if (!disks || ndisks <= 0 || !meta) return NULL;
+    if (meta->segment_count == 0) return NULL;
 
     TV_SCHED *sched = calloc(1, sizeof(TV_SCHED));
     if (!sched) return NULL;
@@ -80,6 +81,11 @@ int tv_flush(TV_SCHED *sched) {
         uint64_t disk_bytes = (uint64_t)seg->weight[i] * TV_CHUNK_SIZE;
         if (disk_bytes == 0) continue;
 
+        if (seg->disk_index[i] >= (uint32_t)sched->ndisks) {
+            fprintf(stderr, "tv_flush: invalid disk index %u\n", seg->disk_index[i]);
+            return -1;
+        }
+
         uint64_t disk_off = stripe_no * disk_bytes;
         int fd = sched->disks[seg->disk_index[i]].fd;
 
@@ -113,6 +119,10 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
 
     while (pos < len) {
         TV_MAP map = tv_map_logical(offset + pos, sched->meta);
+        if (map.disk < 0 || map.disk >= sched->ndisks) {
+            fprintf(stderr, "tv_read: invalid disk index %d\n", map.disk);
+            return -1;
+        }
         uint64_t chunk = len - pos;
         if (chunk > map.length) chunk = map.length;
 

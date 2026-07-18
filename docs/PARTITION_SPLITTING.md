@@ -295,7 +295,7 @@ Mapping 流程：
 ```
 輸入: logical offset
     ↓
-先找 Segment（binary search）
+先找 Segment（linear scan，≤16 個 segment）
     ↓
 stripe_no = (logical - segment_begin) / stripe_size
 offset_in = logical % stripe_size
@@ -333,7 +333,7 @@ sudo tiered_setup --create --name fastpool --disks nvme0n1:500,sda:500,sdb:500 -
 | 碟容量不同 | 依容量排序，分段處理（TV_SEGMENT） |
 | 動態速度變化 | 每輪動態計算比例（第二版 DRR） |
 | 資料結構 | TV_DISK（碟資訊）、TV_SEGMENT（分段）、TV_METADATA（持久化） |
-| Offset 映射 | prefix sum + binary search → TV_MAP |
+| Offset 映射 | prefix sum + linear scan → TV_MAP |
 
 ---
 
