@@ -24,16 +24,10 @@
 #define MAX_DISKS 8
 
 static volatile sig_atomic_t bench_interrupted = 0;
-static volatile sig_atomic_t orphan_abort = 0;
 
 static void bench_signal_handler(int sig) {
     (void)sig;
     bench_interrupted = 1;
-}
-
-static void orphan_sigint(int sig) {
-    (void)sig;
-    orphan_abort = 1;
 }
 
 static void print_usage(const char *prog) {
@@ -108,12 +102,14 @@ typedef struct {
     double speed_read;
     long long carve_gb;
     int is_root;
+    int is_mounted;
 } disk_t;
 
 typedef struct {
     char name[32];
     char tran[16];
     int is_root;
+    int is_mounted;
 } disk_info_t;
 
 static void make_target(char *out, size_t sz, const char *disk) {
@@ -173,8 +169,11 @@ static int load_all_disk_info(disk_info_t *out, int max) {
             strncpy(out[n].tran, tran ? tran : "unknown", sizeof(out[n].tran) - 1);
             out[n].tran[sizeof(out[n].tran) - 1] = 0;
             out[n].is_root = 0;
-            if (mnt && (strcmp(mnt, "/") == 0 || strcmp(mnt, "[swap]") == 0))
+            out[n].is_mounted = 0;
+            if (mnt && strcmp(mnt, "/") == 0)
                 out[n].is_root = 1;
+            else if (mnt && mnt[0] != 0)
+                out[n].is_mounted = 1;
             n++;
         }
         pclose(p);
@@ -268,6 +267,7 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
         int iterations = 5;
         long long file_size = 512LL * 1024 * 1024;
         int block_size = 1024 * 1024;
+        int o_direct_warned = 0;
 
         ws = calloc(iterations, sizeof(double));
         rs = calloc(iterations, sizeof(double));
@@ -282,7 +282,13 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
             snprintf(cleanup_path, sizeof(cleanup_path), "%s", testpath);
 
             int fd = open(testpath, O_RDWR | O_CREAT | O_DIRECT, 0644);
-            if (fd < 0) fd = open(testpath, O_RDWR | O_CREAT, 0644);
+            if (fd < 0) {
+                if (!o_direct_warned) {
+                    fprintf(stderr, "    WARNING: O_DIRECT not supported, using buffered I/O (speeds may be inflated)\n");
+                    o_direct_warned = 1;
+                }
+                fd = open(testpath, O_RDWR | O_CREAT, 0644);
+            }
             if (fd < 0) { fprintf(stderr, "    [debug] open(%s) failed\n", testpath); continue; }
             if (ftruncate(fd, 0) != 0) { close(fd); continue; }
             void *buf = NULL;
@@ -334,8 +340,8 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
         }
 
         for (int i = 0; i < completed; i++) {
-            if (ws[i] != ws[i]) ws[i] = 0;
-            if (rs[i] != rs[i]) rs[i] = 0;
+            if (isnan(ws[i])) ws[i] = 0;
+            if (isnan(rs[i])) rs[i] = 0;
         }
 
         if (completed >= 3) {
@@ -387,9 +393,9 @@ static double cmp_score(const disk_t *d) {
 static int cmp_speed(const void *a, const void *b) {
     double sa = cmp_score((const disk_t *)a);
     double sb = cmp_score((const disk_t *)b);
-    if (sa != sa && sb != sb) return 0;
-    if (sa != sa) return 1;
-    if (sb != sb) return -1;
+    if (isnan(sa) && isnan(sb)) return 0;
+    if (isnan(sa)) return 1;
+    if (isnan(sb)) return -1;
     return (sb > sa) - (sb < sa);
 }
 
@@ -413,11 +419,13 @@ static int cmd_list(void) {
         if (gb >= 1024) snprintf(size_str, sizeof(size_str), "%.1fT", gb / 1024.0);
         else snprintf(size_str, sizeof(size_str), "%lldG", gb);
 
-        printf("%-12s %-8s %-28s %-12s %-8s %-8s%s\n",
+        printf("%-12s %-8s %-28s %-12s %-8s %-8s%s%s\n",
                info[i].name, "disk", model, info[i].tran, size_str, "-",
-               info[i].is_root ? " [ROOT]" : "");
+               info[i].is_root ? " [ROOT]" : "",
+               info[i].is_mounted ? " [MOUNTED]" : "");
     }
     printf("\n[ROOT] = System disk, cannot be carved with dm-linear\n");
+    printf("[MOUNTED] = Mounted partition, cannot be carved with dm-linear\n");
     return 0;
 }
 
@@ -716,16 +724,23 @@ static int cmd_create(int argc, char *argv[]) {
         disks_arr[i].size_gb = sysfs_size_gb(disks_arr[i].disk);
 
         disks_arr[i].is_root = 0;
+        disks_arr[i].is_mounted = 0;
         for (int j = 0; j < ninfo; j++) {
             if (strcmp(disks_arr[i].disk, dinfo[j].name) == 0) {
                 strncpy(disks_arr[i].tran, dinfo[j].tran, sizeof(disks_arr[i].tran) - 1);
                 disks_arr[i].is_root = dinfo[j].is_root;
+                disks_arr[i].is_mounted = dinfo[j].is_mounted;
                 break;
             }
         }
 
         if (disks_arr[i].is_root) {
             printf("  WARNING: /dev/%s is system disk, skipping (cannot carve)\n", disks_arr[i].disk);
+            continue;
+        }
+
+        if (disks_arr[i].is_mounted) {
+            printf("  WARNING: /dev/%s is mounted, skipping (cannot carve)\n", disks_arr[i].disk);
             continue;
         }
 
@@ -992,7 +1007,13 @@ static int cmd_create(int argc, char *argv[]) {
             make_target(target, sizeof(target), valid[i].disk);
             char devpath[128];
             snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
-            args[argc_vg++] = strdup(devpath);
+            args[argc_vg] = strdup(devpath);
+            if (!args[argc_vg]) {
+                fprintf(stderr, "Error: out of memory\n");
+                for (int j = 5; j < argc_vg; j++) free(args[j]);
+                return 1;
+            }
+            argc_vg++;
         }
         args[argc_vg] = NULL;
         int ret = safe_execvp("vgcreate", args);
@@ -1072,9 +1093,10 @@ static int cmd_create(int argc, char *argv[]) {
                 fclose(cf);
                 char *mkdir_argv[] = {"sudo", "mkdir", "-p", "/etc/tieredvol", NULL};
                 (void)run_sudo_argv(mkdir_argv);
-                char cp_cmd[512];
-                snprintf(cp_cmd, sizeof(cp_cmd), "sudo cp %s /etc/tieredvol/%s.conf", conf_path, name);
-                int cp_ret = system(cp_cmd);
+                char dest[512];
+                snprintf(dest, sizeof(dest), "/etc/tieredvol/%s.conf", name);
+                char *cp_argv[] = {"sudo", "cp", conf_path, dest, NULL};
+                int cp_ret = run_sudo_argv(cp_argv);
                 if (cp_ret != 0) fprintf(stderr, "Warning: failed to save config\n");
             } else {
                 close(conf_fd);
@@ -1151,22 +1173,12 @@ static int cmd_remove(int argc, char *argv[]) {
             }
             pclose(p);
             if (orphan_count > 0) {
-                fprintf(stderr, "  WARNING: Found %d orphan dm targets matching 'tv_*_carve'.\n", orphan_count);
+                fprintf(stderr, "  ERROR: Found %d orphan dm targets matching 'tv_*_carve'.\n", orphan_count);
                 for (int i = 0; i < ntargets; i++)
                     fprintf(stderr, "    - %s\n", targets[i]);
-                fprintf(stderr, "  These will ALL be removed. Press Ctrl+C within 3 seconds to abort.\n");
-                struct sigaction sa_new, sa_old;
-                memset(&sa_new, 0, sizeof(sa_new));
-                sa_new.sa_handler = orphan_sigint;
-                sigemptyset(&sa_new.sa_mask);
-                sigaction(SIGINT, &sa_new, &sa_old);
-                orphan_abort = 0;
-                for (int i = 0; i < 30 && !orphan_abort; i++) usleep(100000);
-                sigaction(SIGINT, &sa_old, NULL);
-                if (orphan_abort) {
-                    fprintf(stderr, "  Aborted.\n");
-                    return 1;
-                }
+                fprintf(stderr, "  Cannot determine which belong to '%s' without config file.\n", name);
+                fprintf(stderr, "  Please recreate /etc/tieredvol/%s.conf or remove them manually.\n", name);
+                return 1;
             }
         }
     }

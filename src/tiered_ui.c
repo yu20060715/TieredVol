@@ -131,7 +131,8 @@ static void parse_disk_list() {
     ndisks = 0;
     char *line = strtok(out, "\n");
     while (line && ndisks < MAX_DISKS) {
-        if (line[0] == '-' || line[0] == '[' || strlen(line) < 5) {
+        if (line[0] == '-' || line[0] == '[' || strlen(line) < 5 ||
+            strncmp(line, "DEVICE", 6) == 0) {
             line = strtok(NULL, "\n");
             continue;
         }
@@ -139,15 +140,17 @@ static void parse_disk_list() {
         memset(d, 0, sizeof(*d));
         int llen = (int)strlen(line);
         if (llen < 20) { line = strtok(NULL, "\n"); continue; }
+        int d_end = 12; if (d_end > llen) d_end = llen;
         int m_end = 20 + 28; if (m_end > llen) m_end = llen;
         int t_start = m_end; int t_end = t_start + 12; if (t_end > llen) t_end = llen;
         int s_start = t_end; int s_end = s_start + 8; if (s_end > llen) s_end = llen;
+        int nd_len = d_end; while (nd_len > 0 && line[nd_len - 1] == ' ') nd_len--;
         int nm = m_end - 20; while (nm > 0 && line[20 + nm - 1] == ' ') nm--;
         int nt = t_end - t_start; while (nt > 0 && line[t_start + nt - 1] == ' ') nt--;
         int ns = s_end - s_start; while (ns > 0 && line[s_start + ns - 1] == ' ') ns--;
-        if (nm <= 0 || nt <= 0) { line = strtok(NULL, "\n"); continue; }
+        if (nd_len <= 0 || nm <= 0 || nt <= 0) { line = strtok(NULL, "\n"); continue; }
         char model_buf[128] = "", tran_buf[16] = "", size_buf[32] = "";
-        memcpy(d->disk, line, (nm < 31 ? nm : 31)); d->disk[nm < 31 ? nm : 31] = 0;
+        memcpy(d->disk, line, (nd_len < 31 ? nd_len : 31)); d->disk[nd_len < 31 ? nd_len : 31] = 0;
         memcpy(model_buf, line + 20, (nm < 127 ? nm : 127)); model_buf[nm < 127 ? nm : 127] = 0;
         memcpy(tran_buf, line + t_start, (nt < 15 ? nt : 15)); tran_buf[nt < 15 ? nt : 15] = 0;
         if (ns > 0) { memcpy(size_buf, line + s_start, (ns < 31 ? ns : 31)); size_buf[ns < 31 ? ns : 31] = 0; }
@@ -365,16 +368,18 @@ static void screen_ram_cache() {
     ram_cache.original_dirty_bg_ratio = system_dirty_bg_ratio;
     if (ram_cache.original_dirty_ratio < 0) ram_cache.original_dirty_ratio = 20;
     if (ram_cache.original_dirty_bg_ratio < 0) ram_cache.original_dirty_bg_ratio = 10;
-    int total_mb = ram_cache.total_kb / 1024;
-    int avail_mb = ram_cache.available_kb / 1024;
-    int max_borrow = avail_mb - 2048;
-    if (max_borrow < 0) max_borrow = 0;
-    if (max_borrow > total_mb / 2) max_borrow = total_mb / 2;
     int borrow_mb = ram_cache.current_borrow_mb;
     int step = 128;
     int sel = 0;
     int need_refresh = 1;
     while (1) {
+        read_meminfo(&ram_cache);
+        int total_mb = ram_cache.total_kb / 1024;
+        int avail_mb = ram_cache.available_kb / 1024;
+        int max_borrow = avail_mb - 2048;
+        if (max_borrow < 0) max_borrow = 0;
+        if (max_borrow > total_mb / 2) max_borrow = total_mb / 2;
+        if (borrow_mb > max_borrow) borrow_mb = max_borrow;
         if (need_refresh) {
             clear();
             int maxy = getmaxy(stdscr);
@@ -651,8 +656,8 @@ static void screen_bench() {
     if (!bench_finished) {
         while (!bench_finished) {
             auto_bench_poll();
-    clear();
-    int maxx = getmaxx(stdscr);
+            clear();
+            int maxx = getmaxx(stdscr);
             attron(A_BOLD | COLOR_PAIR(2));
             mvprintw(0, (maxx - 28) / 2, "=== Benchmark (Auto) ===");
             attroff(A_BOLD | COLOR_PAIR(2));
