@@ -64,13 +64,13 @@
 ### 8. 支援 NVMe namespace 格式
 - **問題**：`sysfs_model()` 用 `/sys/block/<name>/device/model`，NVMe 的 model 路徑不同
 - **做法**：偵測到 `nvme*` 時改用 `/sys/block/<name>/device/device/model` 或 `/sys/class/nvme/nvmeX/model`
-- **位置**：`tiered_setup.c:150-167`
+- **位置**：`tiered_setup.c` 的 `sysfs_model()` 函式
 - **難度**：簡單
 
 ### 9. Config 路徑可配置
 - **問題**：`/etc/tieredvol` 硬編碼，有些系統不允許寫入
 - **做法**：改用 `$HOME/.config/tieredvol/` 或加 `--config-dir` 參數
-- **位置**：`tiered_setup.c:1114-1118` 和 `tiered_setup.c:1163`
+- **位置**：`tiered_setup.c` 的 config 寫入/讀取邏輯
 - **難度**：簡單
 
 ---

@@ -298,7 +298,7 @@ Mapping 流程：
 先找 Segment（linear scan，≤16 個 segment）
     ↓
 stripe_no = (logical - segment_begin) / stripe_size
-offset_in = logical % stripe_size
+offset_in = (logical - segment_begin) % stripe_size
     ↓
 binary search boundary → 找到 disk id
     ↓

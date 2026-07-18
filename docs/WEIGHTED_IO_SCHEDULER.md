@@ -89,11 +89,11 @@ stripe_size = 768KB
 // input: logical_offset (bytes), chunk_size, weight, disk_list
 // output: disk_index, disk_offset
 
-stripe_no    = logical_offset / stripe_size;
-offset_in    = logical_offset % stripe_size;
+stripe_no    = (logical_offset - segment_begin) / stripe_size;
+offset_in    = (logical_offset - segment_begin) % stripe_size;
 
-// binary search disk_boundary
-disk_index   = find_disk(offset_in);  // prefix sum + binary search
+// linear scan disk_boundary（≤16 個 disk）
+disk_index   = find_disk(offset_in);  // prefix sum + linear scan
 disk_offset  = stripe_no * weight[disk_index] * chunk_size
                + (offset_in - disk_boundary[disk_index]);
 ```
@@ -170,7 +170,7 @@ TieredVol 內部維護 ring buffer：
 ### 錯誤處理
 
 ```c
-for (int i = 0; i < sched->ndisks; i++) {
+for (int i = 0; i < (int)seg->disk_count; i++) {
     struct io_uring_cqe *cqe;
     io_uring_wait_cqe(&sched->ring, &cqe);
     int res = cqe->res;
@@ -547,7 +547,7 @@ Create Volume 精靈加入 `--scheduler` 選項。建立後，Volume Status 畫�
 
 ### 開機還原
 
-tieredvol-restore.sh 讀取 `/etc/tieredvol/*.scheduler` 檔案，重建 scheduler state。
+tieredvol-restore.sh 讀取 `/etc/tieredvol/*.conf` 檔案，重建 LVM striping volumes。`.scheduler` 檔案不在此 script 處理範圍內。
 
 ---
 
@@ -555,7 +555,7 @@ tieredvol-restore.sh 讀取 `/etc/tieredvol/*.scheduler` 檔案，重建 schedul
 
 | 項目 | 難度 | 說明 |
 |------|------|------|
-| Weight table 建立 | 簡單 | prefix sum + binary search |
+| Weight table 建立 | 簡單 | prefix sum + linear scan |
 | Offset 映射 | 簡單 | 數學計算 |
 | Stripe buffer | 中等 | Ring buffer + flush 機制 |
 | io_uring dispatch | 中等 | 需要 liburing 或直接 syscall |

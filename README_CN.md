@@ -249,7 +249,7 @@ TieredVol/
 | `tiered_setup.c` | CLI 核心：磁碟發現、benchmark、dm-linear/LVM/scheduler 建立、rollback |
 | `tiered_ui.c` | TUI 前端：7 個畫面、建立精靈、測速、RAM cache 調整 |
 | `tiered_sched.c` | Scheduler 核心：init、write（buffer + flush）、read（mapping + io_uring）、destroy |
-| `tiered_mapper.c` | Logical ↔ Physical offset mapping（prefix sum + binary search） |
+| `tiered_mapper.c` | Logical ↔ Physical offset mapping（prefix sum + linear scan） |
 | `tiered_stripe_buf.c` | Stripe buffer 管理（ring buffer，滿了就 flush） |
 | `tiered_io_uring.c` | io_uring wrapper（SQE/CQE、submit、wait） |
 | `tiered_benchmark.c` | 初始化 benchmark（O_DIRECT，3 次取平均）— **不是儲存 benchmark** |
