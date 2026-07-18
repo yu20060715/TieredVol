@@ -76,11 +76,11 @@
 
 ## 🔵 P3：進階功能（未來）
 
-### 10. Partition Splitting — 按速度比例分配 stripe
+### 10. Weighted Striping Scheduler — 按碟速度比例分配 I/O
 - **問題**：LVM striping 用同一個 stripe size，快碟被迫等慢碟，`2000+1000≠3000`
-- **做法**：根據碟速度比例自動切 partition，快碟多 partition 佔多個 stripe slot
+- **做法**：TieredVol 自己做 I/O Scheduler（io_uring），按 4:1:1 比例直接 dispatch
 - **原理**：詳見 [PARTITION_SPLITTING.md](PARTITION_SPLITTING.md)
-- **難度**：中等（需要切 partition、改 lvcreate 邏輯、刪除時清除 partition）
+- **難度**：中等（需要 io_uring dispatch、stripe buffer、offset 映射）
 
 ### 11. Stripe Size 智慧選擇
 - **問題**：現在用 `has_sata ? 512 : 64` 的簡單判斷，沒有根據實際速度

@@ -83,7 +83,7 @@ Both disks are active at the same time. The kernel sends I/O requests to all dis
 
 **Important: Mixed-speed disks (NVMe + SATA)**
 
-When combining disks of different speeds, the actual throughput is limited by the slowest disk. LVM uses the same stripe size for all disks, so faster disks idle while waiting for slower ones. For example, NVMe (2000 MB/s) + SATA (500 MB/s) yields ~1000 MB/s, not 2500 MB/s. See [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) for an advanced optimization that can significantly improve mixed-speed performance.
+When combining disks of different speeds, the actual throughput is limited by the slowest disk. LVM uses the same stripe size for all disks, so faster disks idle while waiting for slower ones. For example, NVMe (2000 MB/s) + SATA (500 MB/s) yields ~1000 MB/s, not 2500 MB/s. See [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) for a proposed Weighted Striping Scheduler that can achieve near-theoretical speeds.
 
 **How to get closest to theoretical speed:**
 
