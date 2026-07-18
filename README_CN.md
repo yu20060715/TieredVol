@@ -85,6 +85,34 @@ sdb (慢):           [chunk1]         [chunk3]         [chunk5]...
 
 當組合不同速度的硬碟時，實際吞吐量受限於最慢的碟。LVM 對所有碟使用相同的 stripe size，所以較快的碟會空等較慢的碟。例如 NVMe（2000 MB/s）+ SATA（500 MB/s）實際只有 ~1000 MB/s，不是 2500 MB/s。詳見 [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) 了解加權切塊演算法，[WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) 了解 I/O dispatch 實作。
 
+## 加權條帶化排程器
+
+**狀態：開發中（Phase 2）**
+
+TieredVol 正在開發自訂 I/O 排程器，取代 LVM striping 用於混合速度碟。它不再給每顆碟相同的資料量，而是按碟的速度比例分配 chunk：
+
+```
+NVMe  3100 MB/s → 7 chunks = 448KB
+SATA  1700 MB/s → 4 chunks = 256KB
+SATA   800 MB/s → 2 chunks = 128KB
+SATA   450 MB/s → 1 chunk  =  64KB
+
+所有碟同時完成 → 吞吐量接近各碟速度總和
+```
+
+```bash
+# 使用加權條帶化建立 volume
+sudo tiered_setup --create --name fastpool \
+    --disks nvme0n1:1000,sda:500,sdb:500 \
+    --scheduler \
+    --fs ext4 --mount /mnt/fast
+```
+
+詳細實作見：
+- [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) — Weight 計算、容量分段、Offset Mapping
+- [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — 三層架構、io_uring dispatch、stripe buffer、踩坑
+- [AGENTS.md](AGENTS.md) — 完整實作指南，包含每個模組的程式碼
+
 **如何接近理論速度：**
 
 ```bash
@@ -149,21 +177,22 @@ sudo tiered_setup --create --name pool --disks sda,sdb --fs ext4 --mount /mnt/po
 
 ## 系統需求
 
-- Linux（已測試 Ubuntu 24.04, kernel 6.14）
+- Linux（已測試 Ubuntu 24.04, kernel 6.14；最低需 kernel 5.1+ 以支援 io_uring）
 - `lvm2` `dmsetup` `libncurses-dev` `gcc` `make`
+- `liburing-dev`（Weighted Striping Scheduler 需要，可選）
 - Root 權限（sudo）
 
 ### 安裝依賴
 
 ```bash
 # Debian / Ubuntu
-sudo apt install lvm2 libncurses-dev gcc make
+sudo apt install lvm2 libncurses-dev liburing-dev gcc make
 
 # Fedora / RHEL
-sudo dnf install lvm2 ncurses-devel gcc make
+sudo dnf install lvm2 ncurses-devel liburing-devel gcc make
 
 # Arch
-sudo pacman -S lvm2 ncurses gcc make
+sudo pacman -S lvm2 ncurses liburing gcc make
 ```
 
 ## 快速開始
@@ -214,7 +243,7 @@ sudo tiered_setup --bench --disks sdb,sdc,nvme0n1
 sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast
 
 # 建立 striped volume（從 sda 取全碟、sdb 取 500G）
-sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mnt /mnt/pool
+sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mount /mnt/pool
 
 # 查看狀態
 sudo tiered_setup --status
@@ -271,6 +300,7 @@ sudo tiered_ui
 TieredVol/
 ├── README.md                   # 說明文件（英文，根目錄）
 ├── README_CN.md                # 說明文件（中文，本檔案）
+├── AGENTS.md                   # 完整實作指南（給開發者/AI）
 ├── LICENSE                     # MIT 授權條款
 ├── docs/
 │   ├── USAGE.md                # 詳細使用教學
@@ -303,6 +333,21 @@ TieredVol/
 | `tiered_ui_helpers.h` | `ui_disk_t` 結構、`parse_bench_output()`、`bench_disk_done()` |
 | `tieredvol-restore.sh` | 開機還原腳本：讀取 `/etc/tieredvol/*.conf` 重建 dm-linear + LVM volumes |
 | `tieredvol-restore.service` | systemd 單元：在本地檔案系統掛載後觸發還原腳本 |
+
+### Phase 2：加權條帶化（開發中）
+
+| 模組 | 職責 |
+|------|------|
+| `tiered_sched.h` | 所有 struct 定義（TV_DISK, TV_SEGMENT, TV_METADATA, TV_MAP, TV_BUFFER, TV_SCHED）與 API 宣告 |
+| `tiered_sched.c` | Scheduler 核心：init、write（buffer + flush）、read（mapping + io_uring）、destroy |
+| `tiered_mapper.c` | Logical ↔ Physical offset 映射（prefix sum + binary search） |
+| `tiered_stripe_buf.c` | Stripe buffer 管理（ring buffer，滿了就 flush） |
+| `tiered_io_uring.c` | io_uring wrapper（SQE/CQE、submit、wait） |
+| `tiered_benchmark.c` | 碟速 benchmark（O_DIRECT，3 次取平均） |
+| `tiered_partition.c` | Weight 計算、容量分段、segment 建立 |
+| `tiered_metadata.c` | Metadata 讀寫（文字設定檔，/etc/tieredvol/） |
+
+完整實作見 [AGENTS.md](AGENTS.md)。
 
 ## 注意事項
 

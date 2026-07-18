@@ -245,7 +245,7 @@ sudo tiered_setup --bench --disks sdb,sdc,nvme0n1
 sudo tiered_setup --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast
 
 # Create striped volume (full sda + 500G from sdb)
-sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mnt /mnt/pool
+sudo tiered_setup --create --name pool --disks sda,sdb:500 --fs xfs --mount /mnt/pool
 
 # Create volume with weighted striping (mixed-speed disks)
 sudo tiered_setup --create --name fastpool --disks nvme0n1:500,sda:500 --scheduler --fs ext4 --mount /mnt/fast
