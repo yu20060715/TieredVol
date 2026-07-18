@@ -260,6 +260,7 @@ TieredVol/
 
 ## 限制
 
+- **I/O 路徑尚未整合** — `tv_write()` / `tv_read()` 已實作但沒有呼叫端。`--scheduler` 參數目前僅建立 metadata，實際加權 I/O 尚未端對端驗證。
 - **僅支援靜態 weight** — Weight 在初始化時計算並固定。更改 weight 會使所有 mapping 失效。
 - **無容錯機制** — 任何磁碟故障即導致整組 stripe set 損毀。無 degraded mode、無 rebuild、無 mirror/parity。
 - **無法攔截 POSIX write()** — 應用程式必須使用 `tv_write()` / `tv_read()`。標準 `write()` 走檔案系統，不經過 scheduler。

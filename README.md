@@ -260,6 +260,7 @@ TieredVol/
 
 ## Limitations
 
+- **I/O path not yet integrated** — `tv_write()` / `tv_read()` are implemented but not called by any entry point. The `--scheduler` flag currently only builds metadata; actual weighted I/O has not been end-to-end verified.
 - **Static weights only** — Weights are computed at initialization and fixed. Changing weights invalidates all mappings.
 - **No fault tolerance** — If any disk fails, the entire stripe set is lost. No degraded mode, no rebuild, no mirror/parity.
 - **No POSIX write() interception** — Applications must use `tv_write()` / `tv_read()`. Standard `write()` goes to the filesystem, not the scheduler.

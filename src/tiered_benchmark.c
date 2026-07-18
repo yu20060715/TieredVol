@@ -8,7 +8,7 @@
 #include <errno.h>
 #include "tiered_sched.h"
 
-#define BENCH_SIZE      (1 * 1024 * 1024)
+#define BENCH_SIZE      (32 * 1024 * 1024)
 #define BENCH_RUNS      3
 #define BENCH_BLOCK     512
 
