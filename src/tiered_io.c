@@ -304,13 +304,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* SLC cache warm-up: write 10GB through scheduler to exhaust SLC cache */
+    /* SLC cache warm-up: write through scheduler to exhaust SLC cache */
     if (do_warmup && do_bench) {
-        uint64_t warmup_size = 10ULL * 1024 * 1024 * 1024;
+        uint64_t vol_size = meta.segments[0].logical_end - meta.segments[0].logical_begin;
+        uint64_t warmup_size = vol_size * 8 / 10;  /* 80% of volume */
+        if (warmup_size > 10ULL * 1024 * 1024 * 1024)
+            warmup_size = 10ULL * 1024 * 1024 * 1024;  /* cap at 10GB */
         uint8_t *wbuf = malloc((size_t)sched->buf.capacity);
         if (wbuf) {
             memset(wbuf, 0xAB, (size_t)sched->buf.capacity);
-            fprintf(stderr, "Warming up SLC cache (10GB)...\n");
+            fprintf(stderr, "Warming up SLC cache (%luMB, 80%% of volume)...\n",
+                    (unsigned long)(warmup_size / (1024 * 1024)));
             uint64_t warmup_written = 0;
             while (warmup_written < warmup_size) {
                 uint64_t chunk = sched->buf.capacity;
