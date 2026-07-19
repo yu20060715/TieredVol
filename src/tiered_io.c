@@ -18,6 +18,7 @@ static void usage(void) {
         "  --write --offset <N> --len <N>   Write bytes (input from stdin)\n"
         "  --bench --size <N>MB      Write benchmark (default: 64MB)\n"
         "  --bench --size <N>GB      Write benchmark in GB\n"
+        "  --bench-all               Run full benchmark suite (512MB/5120MB/10240MB ± warmup)\n"
         "  --direct                  Use O_DIRECT (bypass page cache, default for --bench)\n"
         "  --no-direct               Disable O_DIRECT for benchmark\n"
         "  --warmup                  SLC cache warm-up (sustained speed)\n"
@@ -25,10 +26,9 @@ static void usage(void) {
         "Examples:\n"
         "  tiered_io --name fastpool --info\n"
         "  tiered_io --name fastpool --bench --size 128MB\n"
+        "  tiered_io --name fastpool --bench-all\n"
         "  tiered_io --name fastpool --bench --size 128MB --warmup\n"
-        "  tiered_io --name fastpool --bench --size 1GB --direct --warmup\n"
-        "  dd if=/dev/zero bs=1M count=10 | tiered_io --name fastpool --write --offset 0 --len 10485760\n"
-        "  tiered_io --name fastpool --read --offset 0 --len 1024 | xxd\n"
+        "  tiered_io --name fastpool --bench --size 128MB --direct --warmup\n"
     );
 }
 
@@ -174,13 +174,55 @@ static int cmd_write(TV_SCHED *sched, uint64_t offset, uint64_t len) {
     return 0;
 }
 
-static int cmd_bench(TV_SCHED *sched, uint64_t size) {
-    uint64_t vol_size = sched->meta->segments[sched->meta->segment_count - 1].logical_end;
+static int do_warmup_exec(TV_SCHED *sched, TV_METADATA *meta) {
+    uint64_t vol_size = meta->segments[0].logical_end - meta->segments[0].logical_begin;
+    uint64_t warmup_size = vol_size * 2 / 10;
+    if (warmup_size > 4ULL * 1024 * 1024 * 1024)
+        warmup_size = 4ULL * 1024 * 1024 * 1024;
+    uint8_t *wbuf = malloc((size_t)sched->stripe_size);
+    if (!wbuf) return -1;
+    memset(wbuf, 0xAB, (size_t)sched->stripe_size);
+    fprintf(stderr, "Warming up SLC cache (%luMB, 20%% of volume)...\n",
+            (unsigned long)(warmup_size / (1024 * 1024)));
+    uint64_t warmup_written = 0;
+    int warmup_ok = 1;
+    while (warmup_written < warmup_size) {
+        uint64_t chunk = sched->stripe_size;
+        if (warmup_written + chunk > warmup_size) chunk = warmup_size - warmup_written;
+        if (tv_write(sched, wbuf, chunk) < 0) { warmup_ok = 0; break; }
+        warmup_written += chunk;
+    }
+    if (warmup_ok && sched->sbuf_used > 0) {
+        if (tv_flush(sched) < 0) warmup_ok = 0;
+    }
+    if (warmup_ok) {
+        for (int i = 0; i < sched->ndisks; i++) {
+            if (sched->disks[i].fd >= 0) fsync(sched->disks[i].fd);
+        }
+    }
+    free(wbuf);
+    if (warmup_ok)
+        fprintf(stderr, "Warm-up complete.\n");
+    else
+        fprintf(stderr, "WARNING: warm-up failed\n");
+    return warmup_ok ? 0 : -1;
+}
+
+static int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA *meta) {
+    uint64_t vol_size = meta->segments[meta->segment_count - 1].logical_end;
     uint64_t remaining = vol_size - sched->sbuf_logical;
     if (size > remaining) {
         fprintf(stderr, "Warning: bench size (%lu MB) exceeds remaining volume (%lu MB), capping\n",
                 (unsigned long)(size / 1048576), (unsigned long)(remaining / 1048576));
         size = remaining;
+    }
+    if (size == 0) {
+        fprintf(stderr, "Warning: no space left in volume, skipping bench\n");
+        return 0;
+    }
+
+    if (warmup) {
+        do_warmup_exec(sched, meta);
     }
 
     uint8_t *buf = malloc((size_t)(sched->stripe_size));
@@ -210,7 +252,6 @@ static int cmd_bench(TV_SCHED *sched, uint64_t size) {
         written += chunk;
     }
 
-    /* Flush remaining partial stripe and wait for all in-flight I/O */
     {
         int ret = tv_flush(sched);
         if (ret < 0) {
@@ -220,7 +261,6 @@ static int cmd_bench(TV_SCHED *sched, uint64_t size) {
         }
     }
 
-    /* Sync all disks to get true physical throughput */
     for (int i = 0; i < sched->ndisks; i++) {
         if (sched->disks[i].fd >= 0)
             fsync(sched->disks[i].fd);
@@ -244,9 +284,34 @@ static int cmd_bench(TV_SCHED *sched, uint64_t size) {
     return 0;
 }
 
+static int cmd_bench_all(TV_SCHED *sched, TV_METADATA *meta) {
+    uint64_t sizes[] = {
+        512ULL  * 1024 * 1024,
+        5120ULL * 1024 * 1024,
+        10240ULL * 1024 * 1024,
+    };
+    int nsizes = sizeof(sizes) / sizeof(sizes[0]);
+    int ret = 0;
+
+    for (int i = 0; i < nsizes; i++) {
+        fprintf(stderr, "\n=== Bench %luMB (no warmup) ===\n",
+                (unsigned long)(sizes[i] / 1048576));
+        if (cmd_bench_one(sched, sizes[i], 0, meta) < 0) { ret = -1; break; }
+    }
+    if (ret == 0) {
+        for (int i = 0; i < nsizes; i++) {
+            fprintf(stderr, "\n=== Bench %luMB (with warmup) ===\n",
+                    (unsigned long)(sizes[i] / 1048576));
+            if (cmd_bench_one(sched, sizes[i], 1, meta) < 0) { ret = -1; break; }
+        }
+    }
+    return ret;
+}
+
 int main(int argc, char *argv[]) {
     const char *name = NULL;
-    int do_info = 0, do_read = 0, do_write = 0, do_bench = 0, use_direct = -1, do_warmup = 0;
+    int do_info = 0, do_read = 0, do_write = 0, do_bench = 0, do_bench_all = 0;
+    int use_direct = -1, do_warmup = 0;
     uint64_t offset = 0, len = 0, bench_size = 64 * 1024 * 1024;
 
     for (int i = 1; i < argc; i++) {
@@ -258,6 +323,8 @@ int main(int argc, char *argv[]) {
             do_read = 1;
         } else if (strcmp(argv[i], "--write") == 0) {
             do_write = 1;
+        } else if (strcmp(argv[i], "--bench-all") == 0) {
+            do_bench_all = 1;
         } else if (strcmp(argv[i], "--bench") == 0) {
             do_bench = 1;
         } else if (strcmp(argv[i], "--direct") == 0) {
@@ -283,10 +350,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (!do_info && !do_read && !do_write && !do_bench) {
-        fprintf(stderr, "Error: specify --info, --read, --write, or --bench\n");
+    if (!do_info && !do_read && !do_write && !do_bench && !do_bench_all) {
+        fprintf(stderr, "Error: specify --info, --read, --write, --bench, or --bench-all\n");
         usage();
         return 1;
+    }
+
+    if (do_bench_all) {
+        do_bench = 1;
+        use_direct = 1;
     }
 
     /* --bench defaults to O_DIRECT unless --no-direct is specified */
@@ -321,44 +393,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* SLC cache warm-up: write through scheduler to exhaust SLC cache */
-    if (do_warmup && do_bench) {
-        uint64_t vol_size = meta.segments[0].logical_end - meta.segments[0].logical_begin;
-        uint64_t warmup_size = vol_size * 2 / 10;  /* 20% of volume */
-        if (warmup_size > 4ULL * 1024 * 1024 * 1024)
-            warmup_size = 4ULL * 1024 * 1024 * 1024;  /* cap at 4GB */
-        uint8_t *wbuf = malloc((size_t)sched->stripe_size);
-        if (wbuf) {
-            memset(wbuf, 0xAB, (size_t)sched->stripe_size);
-            fprintf(stderr, "Warming up SLC cache (%luMB, 20%% of volume)...\n",
-                    (unsigned long)(warmup_size / (1024 * 1024)));
-            uint64_t warmup_written = 0;
-            int warmup_ok = 1;
-            while (warmup_written < warmup_size) {
-                uint64_t chunk = sched->stripe_size;
-                if (warmup_written + chunk > warmup_size) chunk = warmup_size - warmup_written;
-                if (tv_write(sched, wbuf, chunk) < 0) { warmup_ok = 0; break; }
-                warmup_written += chunk;
-            }
-            if (warmup_ok && sched->sbuf_used > 0) {
-                if (tv_flush(sched) < 0) warmup_ok = 0;
-            }
-            /* Sync to ensure warmup data is on physical media */
-            if (warmup_ok) {
-                for (int i = 0; i < sched->ndisks; i++) {
-                    if (sched->disks[i].fd >= 0) fsync(sched->disks[i].fd);
-                }
-            }
-            free(wbuf);
-            if (warmup_ok)
-                fprintf(stderr, "Warm-up complete, starting benchmark...\n");
-            else
-                fprintf(stderr, "WARNING: warm-up failed, benchmark results may be inaccurate\n");
-        }
-    }
-
     int ret = 0;
-    if (do_read) {
+    if (do_bench_all) {
+        ret = cmd_bench_all(sched, &meta);
+    } else if (do_read) {
         if (len == 0) {
             fprintf(stderr, "Error: --read requires --len\n");
             ret = 1;
@@ -373,7 +411,11 @@ int main(int argc, char *argv[]) {
             ret = cmd_write(sched, offset, len);
         }
     } else if (do_bench) {
-        ret = cmd_bench(sched, bench_size);
+        /* Single bench with optional warmup */
+        if (do_warmup) {
+            do_warmup_exec(sched, &meta);
+        }
+        ret = cmd_bench_one(sched, bench_size, 0, &meta);
     }
 
     /* Cleanup */
