@@ -28,7 +28,6 @@ static void usage(void) {
         "  tiered_io --name fastpool --bench --size 128MB\n"
         "  tiered_io --name fastpool --bench-all\n"
         "  tiered_io --name fastpool --bench --size 128MB --warmup\n"
-        "  tiered_io --name fastpool --bench --size 128MB --direct --warmup\n"
     );
 }
 
@@ -284,7 +283,7 @@ static int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA
     return 0;
 }
 
-static int cmd_bench_all(TV_SCHED *sched, TV_METADATA *meta) {
+static int cmd_bench_all(TV_METADATA *meta) {
     uint64_t sizes[] = {
         512ULL  * 1024 * 1024,
         5120ULL * 1024 * 1024,
@@ -293,17 +292,34 @@ static int cmd_bench_all(TV_SCHED *sched, TV_METADATA *meta) {
     int nsizes = sizeof(sizes) / sizeof(sizes[0]);
     int ret = 0;
 
-    for (int i = 0; i < nsizes; i++) {
-        fprintf(stderr, "\n=== Bench %luMB (no warmup) ===\n",
-                (unsigned long)(sizes[i] / 1048576));
-        if (cmd_bench_one(sched, sizes[i], 0, meta) < 0) { ret = -1; break; }
-    }
-    if (ret == 0) {
+    for (int phase = 0; phase < 2; phase++) {
         for (int i = 0; i < nsizes; i++) {
-            fprintf(stderr, "\n=== Bench %luMB (with warmup) ===\n",
-                    (unsigned long)(sizes[i] / 1048576));
-            if (cmd_bench_one(sched, sizes[i], 1, meta) < 0) { ret = -1; break; }
+            /* Reopen disks + reinit scheduler for each run to reset write offset */
+            TV_DISK disks[TV_MAX_DISKS];
+            if (open_disks(meta, disks, 1) < 0) { ret = -1; break; }
+
+            TV_SCHED *sched = tv_sched_init(disks, (int)meta->disk_count, meta);
+            if (!sched) {
+                fprintf(stderr, "Error: tv_sched_init failed\n");
+                close_disks(disks, (int)meta->disk_count);
+                ret = -1;
+                break;
+            }
+
+            fprintf(stderr, "\n=== Bench %luMB (%s) ===\n",
+                    (unsigned long)(sizes[i] / 1048576),
+                    phase == 0 ? "no warmup" : "with warmup");
+            if (cmd_bench_one(sched, sizes[i], phase == 1, meta) < 0) {
+                tv_sched_destroy(sched);
+                close_disks(disks, (int)meta->disk_count);
+                ret = -1;
+                break;
+            }
+
+            tv_sched_destroy(sched);
+            close_disks(disks, (int)meta->disk_count);
         }
+        if (ret < 0) break;
     }
     return ret;
 }
@@ -395,7 +411,10 @@ int main(int argc, char *argv[]) {
 
     int ret = 0;
     if (do_bench_all) {
-        ret = cmd_bench_all(sched, &meta);
+        /* bench-all manages its own scheduler lifecycle (reopen per run) */
+        tv_sched_destroy(sched);
+        close_disks(disks, (int)meta.disk_count);
+        ret = cmd_bench_all(&meta);
     } else if (do_read) {
         if (len == 0) {
             fprintf(stderr, "Error: --read requires --len\n");
@@ -418,9 +437,11 @@ int main(int argc, char *argv[]) {
         ret = cmd_bench_one(sched, bench_size, 0, &meta);
     }
 
-    /* Cleanup */
-    tv_sched_destroy(sched);
-    close_disks(disks, (int)meta.disk_count);
+    /* Cleanup (bench-all manages its own lifecycle) */
+    if (!do_bench_all) {
+        tv_sched_destroy(sched);
+        close_disks(disks, (int)meta.disk_count);
+    }
 
     return ret;
 }
