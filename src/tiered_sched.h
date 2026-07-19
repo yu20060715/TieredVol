@@ -49,6 +49,7 @@ typedef struct {
     uint8_t *data;       /* 512-byte aligned stripe buffer */
     uint64_t logical;    /* logical offset for this stripe */
     int      in_flight;  /* 1 = I/O submitted, waiting for completion */
+    int      cqes_pending; /* SQEs still in flight for this stripe */
 } TV_STRIPE_BUF;
 
 typedef struct {

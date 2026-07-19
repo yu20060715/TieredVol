@@ -212,6 +212,12 @@ static int cmd_bench(TV_SCHED *sched, uint64_t size) {
         }
     }
 
+    /* Sync all disks to get true physical throughput */
+    for (int i = 0; i < sched->ndisks; i++) {
+        if (sched->disks[i].fd >= 0)
+            fsync(sched->disks[i].fd);
+    }
+
     clock_gettime(CLOCK_MONOTONIC, &ts_end);
     double elapsed = (ts_end.tv_sec - ts_start.tv_sec) +
                      (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
@@ -328,6 +334,12 @@ int main(int argc, char *argv[]) {
             }
             if (warmup_ok && sched->sbuf_used > 0) {
                 if (tv_flush(sched) < 0) warmup_ok = 0;
+            }
+            /* Sync to ensure warmup data is on physical media */
+            if (warmup_ok) {
+                for (int i = 0; i < sched->ndisks; i++) {
+                    if (sched->disks[i].fd >= 0) fsync(sched->disks[i].fd);
+                }
             }
             free(wbuf);
             if (warmup_ok)
