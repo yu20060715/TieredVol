@@ -51,13 +51,14 @@ static void reap_completed(TV_SCHED *sched) {
         if (cqe->res < 0)
             fprintf(stderr, "tv_flush: I/O error: %s\n", strerror(-cqe->res));
         io_uring_cqe_seen(&sched->ring, cqe);
-        sched->inflight--;
-        /* Decrement oldest in-flight buffer's pending count */
+        /* Decrement oldest in-flight buffer's pending count;
+           only decrement inflight when ALL SQEs for that buffer complete */
         for (int i = 0; i < TV_BUF_COUNT; i++) {
             if (sched->sbuf[i].in_flight) {
                 sched->sbuf[i].cqes_pending--;
                 if (sched->sbuf[i].cqes_pending <= 0) {
                     sched->sbuf[i].in_flight = 0;
+                    sched->inflight--;
                 }
                 break;
             }
@@ -101,12 +102,13 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
                         if (cqe->res < 0)
                             fprintf(stderr, "tv_write: I/O error: %s\n", strerror(-cqe->res));
                         io_uring_cqe_seen(&sched->ring, cqe);
-                        sched->inflight--;
                         for (int i = 0; i < TV_BUF_COUNT; i++) {
                             if (sched->sbuf[i].in_flight) {
                                 sched->sbuf[i].cqes_pending--;
-                                if (sched->sbuf[i].cqes_pending <= 0)
+                                if (sched->sbuf[i].cqes_pending <= 0) {
                                     sched->sbuf[i].in_flight = 0;
+                                    sched->inflight--;
+                                }
                                 break;
                             }
                         }
@@ -202,12 +204,13 @@ int tv_flush(TV_SCHED *sched) {
         if (cqe->res < 0)
             fprintf(stderr, "tv_flush: I/O error: %s\n", strerror(-cqe->res));
         io_uring_cqe_seen(&sched->ring, cqe);
-        sched->inflight--;
         for (int i = 0; i < TV_BUF_COUNT; i++) {
             if (sched->sbuf[i].in_flight) {
                 sched->sbuf[i].cqes_pending--;
-                if (sched->sbuf[i].cqes_pending <= 0)
+                if (sched->sbuf[i].cqes_pending <= 0) {
                     sched->sbuf[i].in_flight = 0;
+                    sched->inflight--;
+                }
                 break;
             }
         }
