@@ -185,6 +185,11 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
 
 void tv_sched_destroy(TV_SCHED *sched) {
     if (!sched) return;
+    if (sched->buf.used > 0) {
+        fprintf(stderr, "WARNING: flushing %lu bytes of unflushed data\n",
+                (unsigned long)sched->buf.used);
+        tv_flush(sched);
+    }
     tv_uring_destroy(&sched->ring);
     tv_buf_destroy(&sched->buf);
     free(sched);
