@@ -3,6 +3,9 @@
 #include <string.h>
 #include "tiered_sched.h"
 
+static int tv_flush_submit(TV_SCHED *sched);
+static int tv_flush_wait(TV_SCHED *sched);
+
 TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
     if (!disks || ndisks <= 0 || !meta) return NULL;
     if (meta->segment_count == 0) return NULL;
