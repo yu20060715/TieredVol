@@ -218,6 +218,9 @@ static int cmd_bench(TV_SCHED *sched, uint64_t size) {
                     stripe_idx, (unsigned long)(written / 1048576), sched->inflight);
     }
 
+    fprintf(stderr, "  [debug] bench loop done: %d stripes, %luMB, inflight=%d\n",
+            stripe_idx, (unsigned long)(written / 1048576), sched->inflight);
+
     /* Flush remaining partial stripe and wait for all in-flight I/O */
     {
         int ret = tv_flush(sched);
