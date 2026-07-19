@@ -4,13 +4,12 @@
 #include "tiered_sched.h"
 
 /* Forward declarations */
-static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uint64_t data_len);
+static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uint64_t data_len, int buf_idx);
 
 TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
     if (!disks || ndisks <= 0 || !meta) return NULL;
     if (meta->segment_count == 0) return NULL;
 
-    fprintf(stderr, "  [debug] calloc TV_SCHED...\n");
     TV_SCHED *sched = calloc(1, sizeof(TV_SCHED));
     if (!sched) return NULL;
 
@@ -18,19 +17,15 @@ TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
     sched->ndisks = ndisks;
     sched->meta = meta;
     sched->stripe_size = meta->segments[0].stripe_size;
-    fprintf(stderr, "  [debug] stripe_size=%luKB\n", (unsigned long)(sched->stripe_size / 1024));
 
-    fprintf(stderr, "  [debug] io_uring_init...\n");
     if (tv_uring_init(&sched->ring, 256) < 0) {
         free(sched);
         return NULL;
     }
 
-    fprintf(stderr, "  [debug] aligned_alloc x%d...\n", TV_BUF_COUNT);
     for (int i = 0; i < TV_BUF_COUNT; i++) {
         sched->sbuf[i].data = aligned_alloc(512, (size_t)sched->stripe_size);
         if (!sched->sbuf[i].data) {
-            fprintf(stderr, "  [debug] aligned_alloc FAILED at i=%d\n", i);
             for (int j = 0; j < i; j++) free(sched->sbuf[j].data);
             tv_uring_destroy(&sched->ring);
             free(sched);
@@ -44,29 +39,24 @@ TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
     sched->sbuf_logical = 0;
     sched->inflight = 0;
 
-    fprintf(stderr, "  [debug] tv_sched_init done\n");
     return sched;
 }
 
-/* Reap completed CQEs — mark buffer free only when ALL its SQEs complete */
+/* Reap completed CQEs using user_data to identify the correct buffer */
 static void reap_completed(TV_SCHED *sched) {
     struct io_uring_cqe *cqe;
     while (sched->inflight > 0) {
         int ret = io_uring_peek_cqe(&sched->ring, &cqe);
         if (ret < 0 || !cqe) break;
         if (cqe->res < 0)
-            fprintf(stderr, "tv_flush: I/O error: %s\n", strerror(-cqe->res));
+            fprintf(stderr, "tv_sched: I/O error res=%d\n", cqe->res);
+        int buf_idx = (int)(intptr_t)io_uring_cqe_get_data(cqe);
         io_uring_cqe_seen(&sched->ring, cqe);
-        /* Decrement oldest in-flight buffer's pending count;
-           only decrement inflight when ALL SQEs for that buffer complete */
-        for (int i = 0; i < TV_BUF_COUNT; i++) {
-            if (sched->sbuf[i].in_flight) {
-                sched->sbuf[i].cqes_pending--;
-                if (sched->sbuf[i].cqes_pending <= 0) {
-                    sched->sbuf[i].in_flight = 0;
-                    sched->inflight--;
-                }
-                break;
+        if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
+            sched->sbuf[buf_idx].cqes_pending--;
+            if (sched->sbuf[buf_idx].cqes_pending <= 0) {
+                sched->sbuf[buf_idx].in_flight = 0;
+                sched->inflight--;
             }
         }
     }
@@ -82,8 +72,9 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
         uint64_t space = sched->stripe_size - sched->sbuf_used;
 
         if (space == 0) {
-            TV_STRIPE_BUF *cur = &sched->sbuf[sched->sbuf_head];
-            int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used);
+            int head = sched->sbuf_head;
+            TV_STRIPE_BUF *cur = &sched->sbuf[head];
+            int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used, head);
             if (nsub < 0) return -1;
             cur->in_flight = 1;
             cur->cqes_pending = nsub;
@@ -96,7 +87,6 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
 
             /* All buffers occupied — wait for one to fully complete */
             if (sched->inflight >= TV_BUF_COUNT) {
-                fprintf(stderr, "  [debug] tv_write: PIPELINE FULL, inflight=%d, waiting...\n", sched->inflight);
                 while (sched->inflight >= TV_BUF_COUNT) {
                     reap_completed(sched);
                     if (sched->inflight >= TV_BUF_COUNT) {
@@ -106,21 +96,15 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
                             fprintf(stderr, "tv_write: wait_cqe failed\n");
                             return -1;
                         }
+                        int buf_idx = (int)(intptr_t)io_uring_cqe_get_data(cqe);
                         if (cqe->res < 0)
-                            fprintf(stderr, "tv_write: I/O error fd=%d res=%d\n", cqe->user_data, cqe->res);
-                        fprintf(stderr, "  [debug] wait_cqe: res=%d inflight=%d\n", cqe->res, sched->inflight);
+                            fprintf(stderr, "tv_write: I/O error res=%d\n", cqe->res);
                         io_uring_cqe_seen(&sched->ring, cqe);
-                        for (int i = 0; i < TV_BUF_COUNT; i++) {
-                            if (sched->sbuf[i].in_flight) {
-                                fprintf(stderr, "  [debug]   attributing to buf[%d] cqes_pending %d->%d\n",
-                                        i, sched->sbuf[i].cqes_pending, sched->sbuf[i].cqes_pending - 1);
-                                sched->sbuf[i].cqes_pending--;
-                                if (sched->sbuf[i].cqes_pending <= 0) {
-                                    sched->sbuf[i].in_flight = 0;
-                                    sched->inflight--;
-                                    fprintf(stderr, "  [debug]   buf[%d] freed, inflight=%d\n", i, sched->inflight);
-                                }
-                                break;
+                        if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
+                            sched->sbuf[buf_idx].cqes_pending--;
+                            if (sched->sbuf[buf_idx].cqes_pending <= 0) {
+                                sched->sbuf[buf_idx].in_flight = 0;
+                                sched->inflight--;
                             }
                         }
                     }
@@ -138,7 +122,7 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
     return 0;
 }
 
-static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uint64_t data_len) {
+static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uint64_t data_len, int buf_idx) {
     TV_SEGMENT *seg = NULL;
     for (int i = 0; i < (int)sched->meta->segment_count; i++) {
         if (logical >= sched->meta->segments[i].logical_begin &&
@@ -157,6 +141,7 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
     uint64_t buf_pos = 0;
     uint64_t remaining = data_len;
     int submitted = 0;
+    void *ud = (void *)(intptr_t)buf_idx;
 
     for (int i = 0; i < (int)seg->disk_count && remaining > 0; i++) {
         uint64_t disk_bytes = (uint64_t)seg->weight[i] * TV_CHUNK_SIZE;
@@ -170,7 +155,7 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
         int fd = sched->disks[seg->disk_index[i]].fd;
 
         if (tv_uring_write(&sched->ring, fd, data + buf_pos,
-                           (size_t)write_bytes, (off_t)disk_off) < 0) {
+                           (size_t)write_bytes, (off_t)disk_off, ud) < 0) {
             fprintf(stderr, "tv_flush: SQE allocation failed for disk %u\n",
                     seg->disk_index[i]);
             return -1;
@@ -191,13 +176,11 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
 int tv_flush(TV_SCHED *sched) {
     if (!sched) return -1;
 
-    fprintf(stderr, "  [debug] tv_flush: entering, inflight=%d sbuf_used=%lu\n",
-            sched->inflight, (unsigned long)sched->sbuf_used);
-
     /* Submit current buffer if it has data */
     if (sched->sbuf_used > 0) {
-        TV_STRIPE_BUF *cur = &sched->sbuf[sched->sbuf_head];
-        int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used);
+        int head = sched->sbuf_head;
+        TV_STRIPE_BUF *cur = &sched->sbuf[head];
+        int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used, head);
         if (nsub < 0) return -1;
         cur->in_flight = 1;
         cur->cqes_pending = nsub;
@@ -207,8 +190,6 @@ int tv_flush(TV_SCHED *sched) {
         sched->sbuf_used = 0;
     }
 
-    fprintf(stderr, "  [debug] tv_flush: waiting for %d in-flight\n", sched->inflight);
-
     /* Wait for ALL in-flight I/Os */
     while (sched->inflight > 0) {
         struct io_uring_cqe *cqe = NULL;
@@ -217,22 +198,19 @@ int tv_flush(TV_SCHED *sched) {
             fprintf(stderr, "tv_flush: wait_cqe failed: %s\n", strerror(-ret));
             return -1;
         }
+        int buf_idx = (int)(intptr_t)io_uring_cqe_get_data(cqe);
         if (cqe->res < 0)
             fprintf(stderr, "tv_flush: I/O error res=%d\n", cqe->res);
         io_uring_cqe_seen(&sched->ring, cqe);
-        for (int i = 0; i < TV_BUF_COUNT; i++) {
-            if (sched->sbuf[i].in_flight) {
-                sched->sbuf[i].cqes_pending--;
-                if (sched->sbuf[i].cqes_pending <= 0) {
-                    sched->sbuf[i].in_flight = 0;
-                    sched->inflight--;
-                }
-                break;
+        if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
+            sched->sbuf[buf_idx].cqes_pending--;
+            if (sched->sbuf[buf_idx].cqes_pending <= 0) {
+                sched->sbuf[buf_idx].in_flight = 0;
+                sched->inflight--;
             }
         }
     }
 
-    fprintf(stderr, "  [debug] tv_flush: done\n");
     return 0;
 }
 

@@ -13,7 +13,7 @@ int tv_uring_init(struct io_uring *ring, int queue_depth) {
     return 0;
 }
 
-int tv_uring_write(struct io_uring *ring, int fd, const void *buf, size_t len, off_t offset) {
+int tv_uring_write(struct io_uring *ring, int fd, const void *buf, size_t len, off_t offset, void *user_data) {
     if (len > UINT_MAX) {
         fprintf(stderr, "tv_uring_write: len %zu exceeds UINT_MAX\n", len);
         return -1;
@@ -22,7 +22,7 @@ int tv_uring_write(struct io_uring *ring, int fd, const void *buf, size_t len, o
     if (!sqe) return -1;
 
     io_uring_prep_write(sqe, fd, buf, (unsigned)len, offset);
-    io_uring_sqe_set_data(sqe, NULL);
+    io_uring_sqe_set_data(sqe, user_data);
     return 0;
 }
 
