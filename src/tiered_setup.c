@@ -270,9 +270,17 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd) {
             }
         }
         if (mret != 0 && strncmp(mp, "/tmp/db_", 8) == 0) {
-            fprintf(stderr, "    ERROR: /dev/%s cannot be mounted. Filesystem may be corrupted.\n", disk);
-            fprintf(stderr, "    Reformat with: sudo mkfs.ext4 /dev/%s\n", disk);
             rmdir(mp);
+            mp[0] = 0;
+            fprintf(stderr, "    /dev/%s has no filesystem, using raw device benchmark\n", disk);
+            char devpath_raw[64];
+            snprintf(devpath_raw, sizeof(devpath_raw), "/dev/%s", disk);
+            uint64_t raw_speed = 0;
+            if (tv_benchmark(devpath_raw, &raw_speed) == 0) {
+                *write_spd = (double)raw_speed;
+                *read_spd = (double)raw_speed;
+                result = 0;
+            }
             goto cleanup;
         }
         need_unmount = 1;
