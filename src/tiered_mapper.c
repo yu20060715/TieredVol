@@ -18,10 +18,7 @@ TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {
     }
 
     /* If not found, return error */
-    if (seg_idx < 0) {
-        TV_MAP err = {-1, 0, 0};
-        return err;
-    }
+    if (seg_idx < 0) return err;
 
     TV_SEGMENT *seg = &meta->segments[seg_idx];
 
@@ -44,6 +41,7 @@ TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {
         }
     }
 
+    TV_MAP map;
     map.disk = (int)seg->disk_index[disk_idx];
     map.offset = stripe_no * (uint64_t)seg->weight[disk_idx] * TV_CHUNK_SIZE
                + (offset_in - boundary[disk_idx]);
