@@ -1273,6 +1273,51 @@ static int cmd_remove(int argc, char *argv[]) {
 
     printf("=== TieredVol: Removing '%s' ===\n", name);
 
+    /* Check for scheduler volume first */
+    char sched_path[256];
+    snprintf(sched_path, sizeof(sched_path), "/etc/tieredvol/%s.scheduler", name);
+    FILE *sf = fopen(sched_path, "r");
+    if (sf) {
+        fclose(sf);
+        printf("  Detected weighted I/O scheduler volume\n");
+
+        /* Read disk names from .scheduler metadata */
+        char targets[MAX_DISKS][64];
+        int ntargets = 0;
+
+        TV_METADATA sched_meta;
+        memset(&sched_meta, 0, sizeof(sched_meta));
+        if (tv_metadata_load(&sched_meta, sched_path) == 0) {
+            for (uint32_t i = 0; i < sched_meta.disk_count && ntargets < MAX_DISKS; i++) {
+                make_target(targets[ntargets], sizeof(targets[0]), sched_meta.disk_names[i]);
+                ntargets++;
+            }
+        }
+
+        /* Remove dm-linear targets */
+        printf("Removing dm-linear targets...\n");
+        for (int i = 0; i < ntargets; i++) {
+            char *const dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
+            (void)run_sudo_argv(dm_argv);
+            printf("  Removed %s\n", targets[i]);
+        }
+
+        /* Remove .scheduler metadata */
+        printf("Removing scheduler metadata...\n");
+        {
+            char *rm_argv[] = {"sudo", "rm", "-f", sched_path, NULL};
+            (void)run_sudo_argv(rm_argv);
+        }
+        char rmdir_cmd[256];
+        snprintf(rmdir_cmd, sizeof(rmdir_cmd), "rmdir /etc/tieredvol 2>/dev/null");
+        (void)system(rmdir_cmd);
+
+        printf("\n=== Remove Complete ===\n");
+        return 0;
+    }
+
+    /* LVM volume path */
+
     char targets[MAX_DISKS][64];
     int ntargets = 0;
 
@@ -1398,7 +1443,7 @@ static int cmd_status(void) {
             struct dirent *ent;
             int found = 0;
             while ((ent = readdir(d))) {
-                if (strstr(ent->d_name, ".conf")) {
+                if (strstr(ent->d_name, ".conf") || strstr(ent->d_name, ".scheduler")) {
                     printf("  /etc/tieredvol/%s\n", ent->d_name);
                     found = 1;
                 }

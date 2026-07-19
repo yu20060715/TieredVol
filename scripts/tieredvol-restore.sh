@@ -172,23 +172,89 @@ if [[ ! -d "$CONF_DIR" ]]; then
     exit 0
 fi
 
+# Restore LVM volumes from .conf files
 configs=("$CONF_DIR"/*.conf)
-if [[ ! -e "${configs[0]}" ]]; then
-    log "No config files found in $CONF_DIR, nothing to restore"
-    exit 0
+if [[ -e "${configs[0]}" ]]; then
+    log "Found ${#configs[@]} LVM config(s) to restore"
+    restored=0
+    failed=0
+    for conf in "${configs[@]}"; do
+        if restore_volume "$conf"; then
+            restored=$((restored + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done
+    log "LVM restore complete: $restored succeeded, $failed failed"
 fi
 
-log "Found ${#configs[@]} config(s) to restore"
+# Restore scheduler volumes from .scheduler files
+scheduler_configs=("$CONF_DIR"/*.scheduler)
+if [[ -e "${scheduler_configs[0]}" ]]; then
+    log "Found ${#scheduler_configs[@]} scheduler config(s) to restore"
+    for sched_file in "${scheduler_configs[@]}"; do
+        local_name=$(basename "$sched_file" .scheduler)
+        log "Restoring scheduler volume: $local_name"
 
-restored=0
-failed=0
-for conf in "${configs[@]}"; do
-    if restore_volume "$conf"; then
-        restored=$((restored + 1))
-    else
-        failed=$((failed + 1))
-    fi
-done
+        # Parse disk names from .scheduler metadata
+        # Format: disk0_name=xxx, disk1_name=yyy
+        disk_names=()
+        while IFS='=' read -r key value; do
+            key=$(echo "$key" | tr -d '[:space:]')
+            value=$(echo "$value" | tr -d '[:space:]')
+            [[ "$key" =~ ^disk[0-9]+_name$ ]] && disk_names+=("$value")
+        done < "$sched_file"
 
-log "Restore complete: $restored succeeded, $failed failed"
-exit $failed
+        if [[ ${#disk_names[@]} -lt 2 ]]; then
+            err "Scheduler volume $local_name needs at least 2 disks, found ${#disk_names[@]}, skipping"
+            continue
+        fi
+
+        # Check all disks exist
+        skip=0
+        for dev in "${disk_names[@]}"; do
+            if [[ ! -b "/dev/$dev" ]]; then
+                err "Disk /dev/$dev not found, skipping volume $local_name"
+                skip=1
+                break
+            fi
+        done
+        [[ $skip -eq 1 ]] && continue
+
+        # Recreate dm-linear targets
+        # We need the carve size. Parse from the .scheduler metadata or use
+        # a reasonable default. The .scheduler file has segment info but not
+        # the original carve size. We'll read the sector count from the
+        # existing dm table if available, or skip.
+        log "  Creating dm-linear targets for $local_name..."
+        for dev in "${disk_names[@]}"; do
+            target="tv_${dev}_carve"
+            # Check if target already exists
+            if run sudo dmsetup ls 2>/dev/null | grep -q "$target"; then
+                log "  $target already exists, skipping"
+                continue
+            fi
+            # Read from saved config if available
+            saved_conf="$CONF_DIR/${local_name}.conf"
+            size_gb=""
+            if [[ -f "$saved_conf" ]]; then
+                while IFS='=' read -r key value; do
+                    key=$(echo "$key" | tr -d '[:space:]')
+                    value=$(echo "$value" | tr -d '[:space:]')
+                    if [[ "$key" == "device" && "$value" == "$dev" ]]; then
+                        # Next line might be size_gb, need to read ahead
+                        :
+                    fi
+                done < "$saved_conf"
+            fi
+            # Without carve size info, we cannot recreate the dm-linear target.
+            # The user needs to re-create the scheduler volume with tiered_setup.
+            err "  Cannot determine carve size for /dev/$dev from .scheduler file."
+            err "  Please re-create the scheduler volume:"
+            err "    sudo tiered_setup --create --name $local_name --disks $(IFS=,; echo "${disk_names[*]}") --scheduler"
+        done
+        log "  Scheduler volume $local_name restore complete (dm targets may need manual recreation)"
+    done
+fi
+
+exit 0

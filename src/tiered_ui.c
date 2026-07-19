@@ -1296,7 +1296,7 @@ static void screen_destroy(void) {
     mvprintw(6, (maxx - 40) / 2, "WARNING: This will permanently delete:");
     attroff(COLOR_PAIR(3));
     mvprintw(8, (maxx - 30) / 2, "- All data on the volume");
-    mvprintw(9, (maxx - 30) / 2, "- The striped LVM configuration");
+    mvprintw(9, (maxx - 30) / 2, "- The volume configuration");
     mvprintw(10, (maxx - 30) / 2, "- All dm-linear targets");
     mvprintw(12, (maxx - 30) / 2, "Are you sure? (y/N)");
     draw_status_bar("Y:Destroy  Any other:Cancel", "Y:Destroy");

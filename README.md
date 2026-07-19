@@ -220,7 +220,9 @@ TieredVol/
 │   ├── PARTITION_SPLITTING.md  # Weighted striping algorithm
 │   └── WEIGHTED_IO_SCHEDULER.md # I/O dispatch implementation
 ├── scripts/
-│   ├── tieredvol-restore.sh
+│   ├── install_deps.sh         # One-click dependency installer
+│   ├── test_scheduler.sh       # End-to-end scheduler test
+│   ├── tieredvol-restore.sh    # Boot-time volume restore
 │   └── tieredvol-restore.service
 ├── Makefile
 ├── src/

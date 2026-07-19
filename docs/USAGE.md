@@ -299,6 +299,113 @@ sudo tiered_setup --destroy --name fastpool
 sudo tiered_setup --remove --name fastpool
 ```
 
+支援刪除 LVM striped volume 和 weighted I/O scheduler volume。程式會自動偵測 `.scheduler` 檔案，如果是 scheduler volume 則只清理 dm-linear targets。
+
+### 建立 Weighted I/O Scheduler Volume
+
+```bash
+sudo tiered_setup --create --name fastpool \
+    --disks nvme0n1:1000,sda:500 \
+    --scheduler
+```
+
+加上 `--scheduler` 參數後，不會建立 LVM volume，而是：
+1. 建立 dm-linear targets
+2. 依磁碟速度計算 weight
+3. 建立 segment 資料
+4. 儲存 metadata 到 `/etc/tieredvol/fastpool.scheduler`
+
+之後用 `tiered_io` 工具進行 I/O 操作。
+
+---
+
+## I/O 工具 (tiered_io)
+
+`tiered_io` 是 Weighted I/O Scheduler 的唯一 I/O 入口。用來驗證 scheduler 的 read/write/bench 功能。
+
+### 查看 Volume 資訊
+
+```bash
+sudo tiered_io --name fastpool --info
+```
+
+輸出 metadata 和 segment 資訊：
+
+```
+Metadata: v1, chunk=64KB, 2 disks, 2 segments
+  Disk[0] nvme0n1
+  Disk[1] sda
+  Segment[0]: 0 - 53687091200 (2 disks, stripe=192KB)
+    disk[0] weight=2 chunk=128KB
+    disk[1] weight=1 chunk=64KB
+  Segment[1]: 53687091200 - 107374182400 (1 disks, stripe=64KB)
+    disk[1] weight=1 chunk=64KB
+```
+
+### 寫入 Benchmark
+
+```bash
+sudo tiered_io --name fastpool --bench --size 128MB
+sudo tiered_io --name fastpool --bench --size 1GB
+```
+
+透過 weighted striping 寫入指定大小的資料，測量吞吐量。
+
+輸出範例：
+```
+Benchmark: 134217728 bytes (128.0 MB) in 0.234 seconds
+Throughput: 547.0 MB/s
+Stripes flushed: 667
+```
+
+### 寫入資料
+
+```bash
+dd if=/dev/zero bs=1M count=10 | sudo tiered_io --name fastpool --write --offset 0 --len 10485760
+```
+
+從 stdin 讀取資料，寫入 scheduler volume 的指定 offset。
+
+| 參數 | 說明 | 必填 |
+|------|------|------|
+| `--offset` | 起始邏輯 offset（bytes） | 否，預設 0 |
+| `--len` | 寫入長度（bytes） | 是 |
+
+### 讀取資料
+
+```bash
+sudo tiered_io --name fastpool --read --offset 0 --len 1024 | xxd
+```
+
+從 scheduler volume 讀取資料，輸出到 stdout。
+
+| 參數 | 說明 | 必填 |
+|------|------|------|
+| `--offset` | 起始邏輯 offset（bytes） | 否，預設 0 |
+| `--len` | 讀取長度（bytes） | 是 |
+
+### 完整測試流程
+
+```bash
+# 1. 建立 scheduler volume
+sudo tiered_setup --create --name testpool \
+    --disks nvme0n1:100,sda:100 \
+    --scheduler
+
+# 2. 確認 metadata
+sudo tiered_io --name testpool --info
+
+# 3. 寫入 benchmark
+sudo tiered_io --name testpool --bench --size 128MB
+
+# 4. 寫入 + 讀回驗證
+dd if=/dev/urandom bs=1M count=1 | sudo tiered_io --name testpool --write --offset 0 --len 1048576
+sudo tiered_io --name testpool --read --offset 0 --len 1048576 | md5sum
+
+# 5. 清理
+sudo tiered_setup --destroy --name testpool
+```
+
 ---
 
 ## 快速鍵速查

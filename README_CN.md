@@ -220,6 +220,8 @@ TieredVol/
 │   ├── PARTITION_SPLITTING.md  # 加權條帶化演算法
 │   └── WEIGHTED_IO_SCHEDULER.md # I/O dispatch 實作
 ├── scripts/
+│   ├── install_deps.sh         # 一鍵安裝依賴
+│   ├── test_scheduler.sh       # End-to-end scheduler 測試
 │   ├── tieredvol-restore.sh
 │   └── tieredvol-restore.service
 ├── Makefile
