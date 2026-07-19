@@ -316,7 +316,7 @@ int main(int argc, char *argv[]) {
         uint64_t warmup_size = vol_size * 2 / 10;  /* 20% of volume */
         if (warmup_size > 4ULL * 1024 * 1024 * 1024)
             warmup_size = 4ULL * 1024 * 1024 * 1024;  /* cap at 4GB */
-        uint8_t *wbuf = malloc((size_t)sched->buf.capacity);
+        uint8_t *wbuf = aligned_alloc(512, (size_t)sched->buf.capacity);
         if (wbuf) {
             memset(wbuf, 0xAB, (size_t)sched->buf.capacity);
             fprintf(stderr, "Warming up SLC cache (%luMB, 20%% of volume)...\n",

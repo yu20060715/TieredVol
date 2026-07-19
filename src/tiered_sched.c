@@ -29,7 +29,7 @@ TV_SCHED *tv_sched_init(TV_DISK *disks, int ndisks, TV_METADATA *meta) {
         return NULL;
     }
 
-    sched->flush_data = malloc((size_t)stripe_size);
+    sched->flush_data = aligned_alloc(512, (size_t)stripe_size);
     if (!sched->flush_data) {
         tv_buf_destroy(&sched->buf);
         tv_uring_destroy(&sched->ring);
