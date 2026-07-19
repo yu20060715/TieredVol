@@ -108,7 +108,6 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
                     seg->disk_index[i]);
             return -1;
         }
-        sched->flush_expected[submitted] = write_bytes;
         buf_pos += write_bytes;
         remaining -= write_bytes;
         submitted++;
@@ -149,10 +148,6 @@ static int tv_flush_wait(TV_SCHED *sched) {
         if (res < 0) {
             fprintf(stderr, "tv_flush: I/O error on pending stripe\n");
             had_error = 1;
-        } else if ((uint64_t)res < sched->flush_expected[i]) {
-            fprintf(stderr, "tv_flush: short write: %d/%lu bytes\n",
-                    res, (unsigned long)sched->flush_expected[i]);
-            had_error = 1;
         }
     }
     sched->flush_pending = 0;
@@ -180,10 +175,6 @@ int tv_flush(TV_SCHED *sched) {
         if (res < 0) {
             fprintf(stderr, "tv_flush: I/O error on stripe at %lu\n",
                     (unsigned long)sched->buf.logical_begin);
-            had_error = 1;
-        } else if ((uint64_t)res < sched->flush_expected[i]) {
-            fprintf(stderr, "tv_flush: short write: %d/%lu bytes\n",
-                    res, (unsigned long)sched->flush_expected[i]);
             had_error = 1;
         }
     }

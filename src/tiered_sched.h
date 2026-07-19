@@ -61,7 +61,6 @@ typedef struct {
     uint8_t     *flush_data;      /* copy of data being flushed */
     int          flush_pending;   /* 1 if async flush in progress */
     int          flush_submitted; /* number of SQEs to wait for */
-    uint64_t     flush_expected[TV_MAX_DISKS]; /* expected bytes per SQE */
 } TV_SCHED;
 
 uint32_t tv_compute_weight(uint64_t speed, uint64_t slowest);
