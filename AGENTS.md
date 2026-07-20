@@ -12,7 +12,7 @@ TieredVol Scheduler 是一個實驗性的使用者空間加權條帶化排程器
 
 **這不是檔案系統、RAID 實作、Linux 區塊驅動裝置或 Device Manager target。** 應用程式透過 `tv_write()` / `tv_read()` 與排程器互動，不會攔截標準 POSIX `write()`。
 
-**目前進度**：Phase 0 + Phase 1（LVM striping CLI 工具）已完成，Phase 2（Weighted I/O Scheduler）已實作並驗證。結果：Scheduler 在 512MB 冷寫達 **1822 MB/s（99.9% 理論值）**，LVM striping 僅 ~550 MB/s，勝出 **3.0x**。
+**目前進度**：Phase 0 + Phase 1（LVM striping CLI 工具）已完成，Phase 2（Weighted I/O Scheduler）已實作並驗證。結果：3 碟 512MB 達 **1792 MB/s（97.9% 理論值）**，2 碟達 **1472 MB/s（2.3x LVM）**。CQE 逾時處理與 `--write --offset` seek 支援已補完。
 
 ### 已知限制
 
@@ -218,21 +218,34 @@ make test
 
 ## 最終驗證結果（B85, 2026/07/20）
 
-硬體：nvme0n1 (937 MB/s), sdb (477 MB/s), sdc (456 MB/s), 共 1870 MB/s 理論總頻寬。
-配置：`TV_CHUNK_SIZE=1MB`, `TV_BUF_COUNT=64`, weights [1,1,2]（nvme×2, sdb×1, sdc×1）, stripe_size=4MB。
+### 2 碟配置
+
+硬體：nvme0n1 (1119 MB/s) + sdb (454 MB/s), 共 1573 MB/s 理論總頻寬。
+配置：`TV_CHUNK_SIZE=1MB`, `TV_BUF_COUNT=64`, weights [2:1]（nvme×2, sdb×1）, stripe=3072KB。
 
 | 大小 | Scheduler (MB/s) | LVM ext4 (MB/s) | 勝出倍數 |
 |------|-----------------|----------------|---------|
-| 512MB | **1822** (99.9%理論) | 618 | **3.0x** |
-| 5GB | **1317** | 580 | **2.3x** |
-| 10GB | **1057** | 541 | **2.0x** |
+| 512MB | **1472** (93.6%理論) | 640 | **2.3x** |
+| 5GB | **1125** | — | — |
+| 10GB | **1122** | — | — |
+
+### 3 碟配置
+
+硬體：nvme0n1 (928 MB/s) + sdb (447 MB/s) + sdc (457 MB/s), 共 1832 MB/s 理論總頻寬。
+配置：`TV_CHUNK_SIZE=1MB`, `TV_BUF_COUNT=64`, weights [2:1:1]（nvme×2, sdb×1, sdc×1）, stripe=4096KB。
+
+| 大小 | Scheduler (MB/s) |
+|------|-----------------|
+| 512MB | **1792** (97.9%理論) |
 
 ### 關鍵結論
 
-1. **512MB 冷寫達 1822 MB/s = 理論值 99.9%**，證明加權條帶化 + io_uring 流水線的三碟利用率近乎完美
-2. **LVM 等寬條帶化僅 ~550 MB/s**，瓶頸在 kernel dm-linear 層，不在 ext4 也不在 I/O 提交方式
-3. **1MB chunk 遠優於 256KB**（1822 vs 1354 MB/s, +35%）— 更少的 per-stripe 開銷
-4. **10GB 降至 ~1050** 因 NVMe SLC cache 耗盡降速，非架構問題
+1. **2 碟 512MB 達 1472 MB/s = 2.3x LVM**，證明加權條帶化有效利用快慢碟組合
+2. **3 碟 512MB 達 1792 MB/s = 97.9% 理論值**，加權條帶化 + io_uring 流水線的三碟利用率近乎完美
+3. **LVM 等寬條帶化僅 ~640 MB/s**，瓶頸在 kernel dm-linear 層，不在 ext4 也不在 I/O 提交方式
+4. **10GB 降至 ~1120** 因 NVMe SLC cache 耗盡降速，非架構問題
+5. **CQE timeout（dm-linear bug）已處理**：5s 逾時 + 殘留 CQE drain，不再輸出吵雜訊息
+6. **`--write --offset` seek 已修復**：對齊 stripe boundary，經 stripe-aligned offset 驗證正確
 
 ### 保留 vs 刪除的對照實驗
 
