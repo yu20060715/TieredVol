@@ -19,7 +19,7 @@ static void test_weight_fast(void) {
     printf("\n[TEST] tv_compute_weight fast disk\n");
     uint32_t w = tv_compute_weight(3000, 500);
     check(w > 1, "fast disk gets weight > 1");
-    check(w <= 100, "weight capped at 100");
+    check(w <= TV_MAX_WEIGHT, "weight capped at 16");
 }
 
 static void test_weight_slow(void) {
@@ -35,9 +35,9 @@ static void test_weight_equal(void) {
 }
 
 static void test_weight_fastest_is_self(void) {
-    printf("\n[TEST] tv_compute_weight fastest disk vs itself\n");
+    printf("\n[TEST] tv_compute_weight same speed\n");
     uint32_t w = tv_compute_weight(2000, 2000);
-    check(w == 100, "fastest disk gets weight 100");
+    check(w == 1, "same speed gives weight 1");
 }
 
 static void test_stripe_size_two_disks(void) {

@@ -6,10 +6,6 @@
 #include <string.h>
 #include <dirent.h>
 
-#ifndef MAX_DISKS
-#define MAX_DISKS 16
-#endif
-
 typedef struct {
     char name[32];
     char tran[16];

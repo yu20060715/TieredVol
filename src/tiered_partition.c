@@ -5,7 +5,7 @@ uint32_t tv_compute_weight(uint64_t speed, uint64_t slowest) {
     if (slowest == 0) return 1;
     double w = (double)speed / (double)slowest;
     uint32_t result = (uint32_t)(w + 0.5);
-    if (result > 16) result = 16;
+    if (result > TV_MAX_WEIGHT) result = TV_MAX_WEIGHT;
     if (result < 1) result = 1;
     return result;
 }

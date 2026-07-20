@@ -4,7 +4,7 @@
 #include <string.h>
 
 #ifndef MAX_DISKS
-#define MAX_DISKS 8
+#define MAX_DISKS 16
 #endif
 
 static inline int tiered_is_valid_name(const char *name) {

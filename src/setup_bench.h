@@ -5,10 +5,6 @@
 #include <stddef.h>
 #include <signal.h>
 
-#ifndef MAX_DISKS
-#define MAX_DISKS 16
-#endif
-
 typedef struct {
     char disk[32];
     char model[128];
