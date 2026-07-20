@@ -32,6 +32,7 @@ static void usage(void) {
         "  --direct                  Use O_DIRECT (default for --bench)\n"
         "  --no-direct               Disable O_DIRECT for benchmark\n"
         "  --warmup                  SLC cache warm-up (sustained speed)\n"
+        "  --raw                     Write directly to block device (bypass filesystem)\n"
         "\n"
         "Examples:\n"
         "  # Scheduler (weighted striping)\n"
@@ -41,6 +42,9 @@ static void usage(void) {
         "  # Direct path (LVM/filesystem, fair comparison)\n"
         "  tiered_io --path /mnt/test --bench --size 128MB\n"
         "  tiered_io --path /mnt/test --bench-all\n"
+        "\n"
+        "  # Raw device (bypass filesystem, fair comparison with scheduler)\n"
+        "  tiered_io --path /dev/mapper/tv_vg_testpool2-tv_lv_testpool2 --bench-all --raw\n"
     );
 }
 
@@ -375,23 +379,36 @@ static int cmd_bench_all(TV_METADATA *meta) {
 }
 
 /* Direct path benchmark: write to a file on a filesystem (LVM/ext4/etc.)
+ * or directly to a block device (--raw).
  * Uses same block size (256KB) and O_DIRECT as scheduler mode for fair comparison. */
-static int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct) {
-    /* Create benchmark file */
-    char benchfile[512];
-    snprintf(benchfile, sizeof(benchfile), "%s/tieredvol_bench.dat", path);
+static int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, int raw) {
+    int fd;
+    int is_file = !raw;
 
-    int flags = O_WRONLY | O_CREAT | O_TRUNC;
-    if (use_direct) flags |= O_DIRECT;
+    if (raw) {
+        /* Raw block device mode: write directly to the device */
+        fd = open(path, O_RDWR | O_DIRECT);
+        if (fd < 0) {
+            fprintf(stderr, "Error: cannot open %s: %s\n", path, strerror(errno));
+            return -1;
+        }
+        fprintf(stderr, "Raw device: %s [O_DIRECT]\n", path);
+    } else {
+        /* Filesystem mode: create benchmark file */
+        char benchfile[512];
+        snprintf(benchfile, sizeof(benchfile), "%s/tieredvol_bench.dat", path);
 
-    int fd = open(benchfile, flags, 0644);
-    if (fd < 0) {
-        fprintf(stderr, "Error: cannot open %s: %s\n", benchfile, strerror(errno));
-        return -1;
+        int flags = O_WRONLY | O_CREAT | O_TRUNC;
+        if (use_direct) flags |= O_DIRECT;
+
+        fd = open(benchfile, flags, 0644);
+        if (fd < 0) {
+            fprintf(stderr, "Error: cannot open %s: %s\n", benchfile, strerror(errno));
+            return -1;
+        }
+        fprintf(stderr, "Benchmark file: %s%s\n", benchfile,
+                use_direct ? " [O_DIRECT]" : "");
     }
-
-    fprintf(stderr, "Benchmark file: %s%s\n", benchfile,
-            use_direct ? " [O_DIRECT]" : "");
 
     /* Use same block size as scheduler (256KB) */
     uint64_t chunk_size = TV_CHUNK_SIZE;
@@ -463,8 +480,12 @@ static int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_d
     fsync(fd);
     close(fd);
 
-    /* Clean up benchmark file */
-    unlink(benchfile);
+    /* Clean up benchmark file (skip for raw device) */
+    if (is_file) {
+        char benchfile[512];
+        snprintf(benchfile, sizeof(benchfile), "%s/tieredvol_bench.dat", path);
+        unlink(benchfile);
+    }
 
     double elapsed = (ts_end.tv_sec - ts_start.tv_sec) +
                      (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
@@ -480,7 +501,7 @@ static int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_d
     return 0;
 }
 
-static int cmd_bench_path_all(const char *path, int use_direct) {
+static int cmd_bench_path_all(const char *path, int use_direct, int raw) {
     uint64_t sizes[] = {
         512ULL  * 1024 * 1024,
         5120ULL * 1024 * 1024,
@@ -494,7 +515,7 @@ static int cmd_bench_path_all(const char *path, int use_direct) {
             fprintf(stderr, "\n=== Bench %luMB (%s) ===\n",
                     (unsigned long)(sizes[i] / 1048576),
                     phase == 0 ? "no warmup" : "with warmup");
-            cmd_bench_path(path, sizes[i], phase == 1, use_direct);
+            cmd_bench_path(path, sizes[i], phase == 1, use_direct, raw);
         }
     }
     return 0;
@@ -507,7 +528,7 @@ int main(int argc, char *argv[]) {
     const char *name = NULL;
     const char *path = NULL;
     int do_info = 0, do_read = 0, do_write = 0, do_bench = 0, do_bench_all = 0;
-    int use_direct = -1, do_warmup = 0;
+    int use_direct = -1, do_warmup = 0, do_raw = 0;
     uint64_t offset = 0, len = 0, bench_size = 64 * 1024 * 1024;
 
     for (int i = 1; i < argc; i++) {
@@ -531,6 +552,8 @@ int main(int argc, char *argv[]) {
             use_direct = 0;
         } else if (strcmp(argv[i], "--warmup") == 0) {
             do_warmup = 1;
+        } else if (strcmp(argv[i], "--raw") == 0) {
+            do_raw = 1;
         } else if (strcmp(argv[i], "--offset") == 0 && i + 1 < argc) {
             offset = strtoull(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--len") == 0 && i + 1 < argc) {
@@ -555,9 +578,9 @@ int main(int argc, char *argv[]) {
         }
         if (do_bench_all) use_direct = 1;  /* --bench-all always uses O_DIRECT */
         if (do_bench_all) {
-            return cmd_bench_path_all(path, use_direct);
+            return cmd_bench_path_all(path, use_direct, do_raw);
         }
-        return cmd_bench_path(path, bench_size, do_warmup, use_direct);
+        return cmd_bench_path(path, bench_size, do_warmup, use_direct, do_raw);
     }
 
     /* Scheduler mode */
