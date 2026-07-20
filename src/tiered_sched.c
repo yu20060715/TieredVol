@@ -200,7 +200,7 @@ int tv_flush(TV_SCHED *sched) {
         cur->cqes_pending = nsub;
         sched->inflight++;
         sched->sbuf_head = (sched->sbuf_head + 1) % TV_BUF_COUNT;
-        sched->sbuf_logical += sched->sbuf_used;
+        sched->sbuf_logical += sched->stripe_size;
         sched->sbuf_used = 0;
     }
 

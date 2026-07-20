@@ -33,7 +33,7 @@ TieredVol/
 ├── src/
 │   ├── tiered_setup.c          # CLI 後端（建立/刪除/還原 volume）
 │   ├── tiered_common.h         # 共用驗證函式
-│   ├── version.h               # 版本 1.2.0
+│   ├── version.h               # 版本 1.4.0
 │   ├── tiered_sched.h          # Scheduler struct + API
 │   ├── tiered_sched.c          # Scheduler 核心
 │   ├── tiered_mapper.c         # Offset mapping
