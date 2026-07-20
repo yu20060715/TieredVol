@@ -552,6 +552,7 @@ int main(int argc, char *argv[]) {
             usage();
             return 1;
         }
+        if (do_bench_all) use_direct = 1;  /* --bench-all always uses O_DIRECT */
         if (do_bench_all) {
             return cmd_bench_path_all(path, use_direct);
         }
