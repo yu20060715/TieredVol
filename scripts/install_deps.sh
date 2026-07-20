@@ -47,7 +47,6 @@ install_debian() {
     sudo apt install -y \
         gcc make \
         liburing-dev \
-        libncurses-dev \
         lvm2 \
         bc
 }
@@ -57,7 +56,6 @@ install_fedora() {
     sudo dnf install -y \
         gcc make \
         liburing-devel \
-        ncurses-devel \
         lvm2 \
         bc
 }
@@ -67,7 +65,6 @@ install_arch() {
     sudo pacman -S --needed --noconfirm \
         gcc make \
         liburing \
-        ncurses \
         lvm2 \
         bc
 }
@@ -94,7 +91,7 @@ echo "  Build successful!"
 echo "=========================================="
 echo ""
 echo "  Binaries:"
-ls -la tiered_setup tiered_ui tiered_io 2>/dev/null | awk '{print "    " $NF " (" $5 " bytes)"}'
+ls -la tiered_setup tiered_io 2>/dev/null | awk '{print "    " $NF " (" $5 " bytes)"}'
 echo ""
 
 if [[ $DO_INSTALL -eq 1 ]]; then
@@ -103,7 +100,6 @@ if [[ $DO_INSTALL -eq 1 ]]; then
     echo ""
     echo "Installed! Run with:"
     echo "  sudo tiered_setup --list"
-    echo "  sudo tiered_ui"
     echo "  sudo tiered_io --name <vol> --info"
 fi
 
@@ -115,5 +111,5 @@ fi
 echo ""
 echo "Quick start:"
 echo "  sudo ./tiered_setup --list"
-echo "  sudo ./tiered_ui"
+echo "  sudo ./tiered_io --name <vol> --info"
 echo "  sudo ./scripts/test_scheduler.sh"

@@ -245,7 +245,7 @@ sudo ./tiered_io --name fastpool --bench --size 128MB
 sudo ./tiered_io --path /mnt/test --bench --size 128MB
 ```
 
-Both modes use the same 256KB block size and O_DIRECT for fair comparison.
+Both modes use the same 1MB block size (TV_CHUNK_SIZE) and O_DIRECT for fair comparison.
 
 ---
 
