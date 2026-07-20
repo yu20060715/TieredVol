@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stdio.h>
 #include "tiered_sched.h"
 
 TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {

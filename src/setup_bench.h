@@ -25,7 +25,6 @@ typedef void (*bench_interrupt_fn)(void *ctx);
 
 int safe_execvp(const char *path, char *const argv[]);
 int run_quiet(const char *path, char *const argv[]);
-int run_capture(const char *path, char *const argv[], char *out, size_t outsize);
 int run_sudo_argv(char *const argv[]);
 int run_sudo_quiet(char *const argv[]);
 

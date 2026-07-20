@@ -4,7 +4,6 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <signal.h>
 #include <time.h>
 #include <errno.h>
 #include <sys/ioctl.h>

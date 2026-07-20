@@ -6,7 +6,9 @@
 #include <string.h>
 #include <dirent.h>
 
+#ifndef MAX_DISKS
 #define MAX_DISKS 16
+#endif
 
 typedef struct {
     char name[32];
@@ -17,7 +19,6 @@ typedef struct {
 
 long long sysfs_size_gb(const char *disk);
 void sysfs_model(const char *disk, char *out, size_t len);
-int is_virtual_disk(const char *name);
 int load_all_disk_info(disk_info_t *out, int max);
 void find_mount_for_disk(const char *disk, char *mp, size_t mp_size);
 int cmd_list(void);

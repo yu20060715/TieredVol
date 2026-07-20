@@ -1,14 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include "setup_discover.h"
-#include "tiered_common.h"
-
-#define MAX_DISKS 16
 
 long long sysfs_size_gb(const char *disk) {
     char path[256];
@@ -41,7 +34,7 @@ void sysfs_model(const char *disk, char *out, size_t len) {
     }
 }
 
-int is_virtual_disk(const char *name) {
+static int is_virtual_disk(const char *name) {
     return strncmp(name, "loop", 4) == 0 || strncmp(name, "ram", 3) == 0 || strncmp(name, "dm-", 3) == 0;
 }
 

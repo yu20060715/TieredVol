@@ -2,10 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
-#include <time.h>
 #include <errno.h>
 #include "tiered_sched.h"
 #include "io_bench.h"

@@ -5,14 +5,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <sys/ioctl.h>
 #include <fcntl.h>
-#include <time.h>
-#include <signal.h>
 #include <dirent.h>
-#include <linux/fs.h>
-#include <math.h>
-#include <limits.h>
 #include <errno.h>
 #include "tiered_common.h"
 #include "tiered_sched.h"
