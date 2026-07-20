@@ -31,12 +31,14 @@ static void print_usage(const char *prog) {
     printf("  %s --list                              List all disks\n", prog);
     printf("  %s --bench --disks sda,sdb,sdc         Benchmark disks (parallel)\n", prog);
     printf("  %s --bench --disks sda,sdb --sequential Benchmark disks (sequential)\n", prog);
+    printf("  %s --bench --disks sda,sdb --warmup    Benchmark with SLC cache warm-up\n", prog);
     printf("  %s --create --name NAME --disks ...    Create tiered volume\n", prog);
     printf("  %s --create --name NAME --disks ... --scheduler  Create with weighted I/O scheduler\n", prog);
     printf("  %s --remove --name NAME                Remove tiered volume\n", prog);
     printf("  %s --destroy --name NAME               Remove tiered volume\n", prog);
     printf("  %s --status                            Show status\n", prog);
     printf("  %s --version                           Show version\n", prog);
+    printf("  %s --help / -h                        Show this help\n", prog);
     printf("\nExamples:\n");
     printf("  sudo %s --create --name fastpool --disks sdb:300,sdc:200 --fs ext4 --mount /mnt/fast\n", prog);
     printf("  sudo %s --remove --name fastpool\n", prog);
@@ -1248,8 +1250,6 @@ static int cmd_create(int argc, char *argv[]) {
     if (mount_point) printf("Mount: %s\n", mount_point);
     printf("\nVerify with:\n");
     printf("  df -h %s\n", mount_point ? mount_point : lv_path);
-    printf("  sudo fio --name=test --filename=%s --rw=write --bs=1M --size=10G\n",
-           mount_point ? mount_point : lv_path);
 
     return 0;
 }

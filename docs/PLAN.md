@@ -30,7 +30,7 @@
 ### 2. Pre-flight Check（啟動時檢查依賴）✅
 - **問題**：程式直接呼叫 dmsetup/lvm2，沒裝的話會在操作中途爆炸
 - **做法**：在 `main()` 開頭檢查 dmsetup、vgcreate、pvcreate、lvremove 是否存在
-- **位置**：`tiered_setup.c` 和 `tiered_ui.c`
+- **位置**：`tiered_setup.c`
 
 ### 3. Carve 大小驗證 ✅
 - **問題**：使用者輸入超過碟容量的 carve 大小，等到 LVM 建 dm-linear 時才失敗
@@ -41,7 +41,7 @@
 ## 🟡 P1：建議（已全部完成）
 
 ### 4. 替換 3 個 system() 為 write_sysctl() ✅
-- **問題**：`tiered_ui.c` 有 3 處使用 `system()`
+- **問題**：`tiered_setup.c` 有 3 處使用 `system()`
 - **做法**：直接寫 `/proc/sys/` 檔案（比 fork+execvp 更簡單更安全）
 
 ### 5. Signal Handler 安全性 ✅
@@ -58,7 +58,7 @@
 
 ### 7. USB 斷線處理
 - **問題**：外接碟拔掉後 dm-linear 會壞掉，程式沒有偵測
-- **做法**：在 `cmd_status()` 和 TUI `screen_status()` 加入 polling 檢查所有 dm target 的底層碟是否還在 `/sys/block/` 裡
+- **做法**：在 `cmd_status()` 加入 polling 檢查所有 dm target 的底層碟是否還在 `/sys/block/` 裡
 - **難度**：中等，需要額外的 polling 機制
 
 ### 8. 支援 NVMe namespace 格式

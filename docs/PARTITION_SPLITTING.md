@@ -262,7 +262,7 @@ Metadata 結構定義在 `src/tiered_sched.h`（TV_METADATA）。
 # /etc/tieredvol/fastpool.scheduler
 [weighted_striping]
 version=1
-chunk_size=262144
+chunk_size=1048576
 segment_count=3
 disk_count=4
 disk0_name=nvme0n1

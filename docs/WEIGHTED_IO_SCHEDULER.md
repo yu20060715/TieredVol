@@ -192,7 +192,7 @@ for (int i = 0; i < (int)seg->disk_count; i++) {
 只需要保存：
 
 ```
-chunk_size:     256KB
+chunk_size:     1MB
 weight:         [6, 3, 2, 1]
 disk_list:      [nvme0n1, sda, sdb, sdc]
 stripe_size:    3072KB  (= sum(weight) × chunk_size)
@@ -251,7 +251,7 @@ Scheduler 核心：io_uring ring, metadata 指標, 碟陣列, stripe buffer。
 
 Stripe buffer：data 指標, 使用量, 邏輯起始 offset, in_flight 計數, CQEs pending。
 
-buffer 固定大小 = stripe_size（例如 3072KB）。Scheduler 內建 pipeline pool（8 個 buffer 交替使用）。
+buffer 固定大小 = stripe_size（例如 3072KB）。Scheduler 內建 pipeline pool（64 個 buffer 交替使用）。
 
 ---
 
@@ -407,7 +407,7 @@ buffer.used = 0;  // 下一個 stripe
 建議：
 - 使用 `io_uring_register_buf_ring()` 做 buffer registration
 - 每次 submit 後 double-check CQE count
-- 保持 chunk_size 為 256KB（確保 512B alignment）
+- 保持 chunk_size 為 1MB（確保 512B alignment）
 - 加 30s timeout 防止 hang
 
 ---

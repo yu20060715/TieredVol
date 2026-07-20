@@ -12,7 +12,7 @@ TieredVol Scheduler 是一個實驗性的使用者空間加權條帶化排程器
 
 **這不是檔案系統、RAID 實作、Linux 區塊驅動裝置或 Device Manager target。** 應用程式透過 `tv_write()` / `tv_read()` 與排程器互動，不會攔截標準 POSIX `write()`。
 
-**目前進度**：Phase 0 + Phase 1（LVM striping CLI 工具）已完成，Phase 2（Weighted I/O Scheduler）已實作並驗證。結果：Scheduler 在 512MB 冷寫達 **1822 MB/s（99.9% 理論值）**，LVM striping 僅 ~550 MB/s，勝出 **3.3x**。
+**目前進度**：Phase 0 + Phase 1（LVM striping CLI 工具）已完成，Phase 2（Weighted I/O Scheduler）已實作並驗證。結果：Scheduler 在 512MB 冷寫達 **1822 MB/s（99.9% 理論值）**，LVM striping 僅 ~550 MB/s，勝出 **3.0x**。
 
 ### 已知限制
 
@@ -31,7 +31,7 @@ TieredVol Scheduler 是一個實驗性的使用者空間加權條帶化排程器
 ```
 TieredVol/
 ├── src/
-│   ├── tiered_setup.c          # CLI 後端（建立/刪除/還原 volume）
+│   ├── tiered_setup.c          # CLI 後端（建立/刪除 volume）
 │   ├── tiered_common.h         # 共用驗證函式
 │   ├── version.h               # 版本 1.4.0
 │   ├── tiered_sched.h          # Scheduler struct + API
@@ -41,7 +41,7 @@ TieredVol/
 │   ├── tiered_benchmark.c      # 初始化 benchmark
 │   ├── tiered_partition.c      # Weight + segment 計算
 │   ├── tiered_metadata.c       # Metadata 讀寫
-│   └── tiered_io.c             # CLI I/O 工具（read/write/bench/bench-all/path）
+│   └── tiered_io.c             # CLI I/O 工具（info/read/write/bench/bench-all/path）
 ├── tests/
 │   └── test_common.c           # 驗證函式測試（34 cases）
 ├── scripts/
