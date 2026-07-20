@@ -1,5 +1,7 @@
 # TieredVol Scheduler
 
+[中文說明 →](docs/README_CN.md)
+
 An experimental user-space weighted striping scheduler for heterogeneous storage devices.
 
 TieredVol Scheduler evaluates whether weighted striping — assigning I/O chunk sizes proportional to each disk's sequential bandwidth — can improve aggregate throughput when storage devices with different speeds (e.g., NVMe + SATA SSD) are combined.
@@ -78,9 +80,9 @@ sudo tiered_io --name fastpool --bench --size 128MB --warmup  # Sustained
 For implementation details, see:
 - [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) — Weight calculation, capacity segmentation, offset mapping
 - [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — Three-layer architecture, io_uring dispatch, stripe buffer
-- [AGENTS.md](AGENTS.md) — Full implementation guide with code for every module
-
 ---
+
+
 
 ## Legacy: dm-linear + LVM Striping Tool
 
@@ -188,8 +190,6 @@ sudo systemctl enable tieredvol-restore
 ```
 TieredVol/
 ├── README.md
-├── README_CN.md
-├── AGENTS.md                   # Implementation guide
 ├── LICENSE                     # MIT License
 ├── docs/
 │   ├── USAGE.md                # Detailed usage guide
