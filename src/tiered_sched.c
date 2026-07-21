@@ -262,35 +262,48 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
     uint64_t pos = 0;
 
     while (pos < len) {
-        TV_MAP map = tv_map_logical(offset + pos, sched->meta);
-        if (map.disk < 0 || map.disk >= sched->ndisks) {
-            fprintf(stderr, "tv_read: invalid disk index %d\n", map.disk);
-            return -1;
-        }
-        uint64_t chunk = len - pos;
-        if (chunk > map.length) chunk = map.length;
+        int n_sqes = 0;
+        uint64_t acc = 0;
 
-        int fd = sched->disks[map.disk].fd;
-        if (tv_uring_read(&sched->ring, fd, dst + pos, (size_t)chunk, (off_t)map.offset) < 0) {
-            fprintf(stderr, "tv_read: cannot allocate SQE for disk %d\n", map.disk);
-            return -1;
+        /* Build SQEs for all disk chunks in the current stripe */
+        while (pos < len && acc < sched->stripe_size) {
+            TV_MAP map = tv_map_logical(offset + pos, sched->meta);
+            if (map.disk < 0 || map.disk >= sched->ndisks) {
+                fprintf(stderr, "tv_read: invalid disk index %d\n", map.disk);
+                return -1;
+            }
+            uint64_t chunk = len - pos;
+            if (chunk > map.length) chunk = map.length;
+            if (acc + chunk > sched->stripe_size)
+                chunk = sched->stripe_size - acc;
+
+            int fd = sched->disks[map.disk].fd;
+            if (tv_uring_read(&sched->ring, fd, dst + pos,
+                              (size_t)chunk, (off_t)map.offset) < 0) {
+                fprintf(stderr, "tv_read: cannot allocate SQE for disk %d\n", map.disk);
+                return -1;
+            }
+            n_sqes++;
+            pos += chunk;
+            acc += chunk;
         }
+
+        if (n_sqes == 0) break;
+
+        /* Single submit — all disks in stripe run in parallel */
         if (tv_uring_submit(&sched->ring) < 0) {
             fprintf(stderr, "tv_read: submit failed\n");
             return -1;
         }
-        int res = tv_uring_wait(&sched->ring);
-        if (res < 0) {
-            fprintf(stderr, "tv_read: I/O error on disk %d at offset %lu\n",
-                    map.disk, (unsigned long)map.offset);
-            return -1;
+
+        /* Wait for all completions */
+        for (int i = 0; i < n_sqes; i++) {
+            int res = tv_uring_wait(&sched->ring);
+            if (res < 0) {
+                fprintf(stderr, "tv_read: I/O error\n");
+                return -1;
+            }
         }
-        if ((uint64_t)res < chunk) {
-            fprintf(stderr, "tv_read: short read on disk %d: %d/%lu bytes\n",
-                    map.disk, res, (unsigned long)chunk);
-            return -1;
-        }
-        pos += chunk;
     }
 
     return 0;
