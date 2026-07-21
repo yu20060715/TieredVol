@@ -239,7 +239,7 @@ int cmp_speed(const void *a, const void *b) {
     double sb = cmp_score((const disk_t *)b);
     if (isnan(sa) && isnan(sb)) return 0;
     if (isnan(sa)) return 1;
-    if (isnan(sb)) return -1;
+    if (isnan(sb)) return TV_ERR;
     return (sb > sa) - (sb < sa);
 }
 
@@ -291,7 +291,7 @@ int run_parallel_bench(disk_t *disks, int ndisks, int warmup,
             }
             fprintf(stderr, "\nBenchmark interrupted.\n");
             if (on_interrupt) on_interrupt(interrupt_ctx);
-            return 1;
+            return TV_ERR;
         }
         int status;
         for (int c = 0; c < nchildren; c++) {
@@ -319,7 +319,7 @@ int run_parallel_bench(disk_t *disks, int ndisks, int warmup,
         }
         if (done < nchildren) usleep(100000);
     }
-    return 0;
+    return TV_OK;
 }
 
 int cmd_bench(int argc, char *argv[]) {
@@ -337,7 +337,7 @@ int cmd_bench(int argc, char *argv[]) {
 
     if (!disk_list) {
         fprintf(stderr, "Usage: tiered_setup --bench --disks sda,sdb,sdc [--sequential] [--warmup]\n");
-        return 1;
+        return TV_ERR;
     }
 
     char disks[MAX_DISKS][32];
@@ -349,7 +349,7 @@ int cmd_bench(int argc, char *argv[]) {
     while (tok && nd < MAX_DISKS) {
         if (!tiered_is_valid_name(tok)) {
             fprintf(stderr, "Error: invalid disk name '%s'\n", tok);
-            return 1;
+            return TV_ERR;
         }
         strncpy(disks[nd], tok, 31);
         disks[nd][31] = 0;
@@ -359,7 +359,7 @@ int cmd_bench(int argc, char *argv[]) {
 
     if (nd == 0) {
         fprintf(stderr, "Error: no valid disks\n");
-        return 1;
+        return TV_ERR;
     }
 
     disk_t info[MAX_DISKS];
@@ -395,8 +395,8 @@ int cmd_bench(int argc, char *argv[]) {
     } else {
         printf("Benchmarking %d disks in parallel...\n", nd);
 
-        if (run_parallel_bench(info, nd, warmup, NULL, NULL) == 1)
-            return 1;
+        if (run_parallel_bench(info, nd, warmup, NULL, NULL) != 0)
+            return TV_ERR;
     }
 
     double total_w = 0;
@@ -418,5 +418,5 @@ int cmd_bench(int argc, char *argv[]) {
     printf("\nTotal theoretical write speed: %.0f MB/s\n", total_w);
     printf("Estimated actual: ~%.0f MB/s (92-97%% efficiency)\n", total_w * TV_ESTIMATED_EFFICIENCY);
 
-    return 0;
+    return TV_OK;
 }

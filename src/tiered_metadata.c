@@ -4,12 +4,12 @@
 #include "tiered_types.h"
 
 int tv_metadata_save(TV_METADATA *meta, const char *path) {
-    if (!meta || !path) return -1;
+    if (!meta || !path) return TV_ERR;
 
     FILE *f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "metadata: cannot write to '%s'\n", path);
-        return -1;
+        return TV_ERR;
     }
 
     fprintf(f, "[weighted_striping]\n");
@@ -49,7 +49,7 @@ int tv_metadata_save(TV_METADATA *meta, const char *path) {
 
 static int parse_line(char *line, char **key, char **val) {
     char *eq = strchr(line, '=');
-    if (!eq) return -1;
+    if (!eq) return TV_ERR;
     *eq = 0;
     *key = line;
     *val = eq + 1;
@@ -60,12 +60,12 @@ static int parse_line(char *line, char **key, char **val) {
 }
 
 int tv_metadata_load(TV_METADATA *meta, const char *path) {
-    if (!meta || !path) return -1;
+    if (!meta || !path) return TV_ERR;
 
     FILE *f = fopen(path, "r");
     if (!f) {
         fprintf(stderr, "metadata: cannot read '%s'\n", path);
-        return -1;
+        return TV_ERR;
     }
 
     memset(meta, 0, sizeof(TV_METADATA));
@@ -121,7 +121,7 @@ int tv_metadata_load(TV_METADATA *meta, const char *path) {
                         fprintf(stderr, "metadata: seg%lu disk index %u >= disk_count %u\n",
                                 idx, d, meta->disk_count);
                         fclose(f);
-                        return -1;
+                        return TV_ERR;
                     }
                     seg->disk_index[j++] = d;
                     t = strtok(NULL, ",");

@@ -78,7 +78,7 @@ int cmd_create(int argc, char *argv[]) {
             long val = strtol(argv[++i], &endptr, 10);
             if (*endptr != '\0' || endptr == argv[i] || val <= 0 || val > 1048576) {
                 fprintf(stderr, "Error: invalid stripesize '%s'\n", argv[i]);
-                return 1;
+                return TV_ERR;
             }
             stripe_size_kb = (int)val;
             user_stripesize = 1;
@@ -87,22 +87,22 @@ int cmd_create(int argc, char *argv[]) {
 
     if (!name || !disk_spec) {
         fprintf(stderr, "Usage: tiered_setup --create --name NAME --disks sdb:300,sdc:200 [--fs ext4] [--mount /mnt/fast]\n");
-        return 1;
+        return TV_ERR;
     }
 
     if (!tiered_is_valid_name(name)) {
         fprintf(stderr, "Error: invalid name '%s' (only a-z, A-Z, 0-9, ., _, - allowed)\n", name);
-        return 1;
+        return TV_ERR;
     }
 
     if (!tiered_is_valid_fs(fs)) {
         fprintf(stderr, "Error: invalid filesystem '%s' (ext4/ext3/xfs/btrfs/none)\n", fs);
-        return 1;
+        return TV_ERR;
     }
 
     if (mount_point && !tiered_is_valid_mount(mount_point)) {
         fprintf(stderr, "Error: mount point invalid (only / a-z 0-9 . _ - allowed)\n");
-        return 1;
+        return TV_ERR;
     }
 
     if (use_scheduler && (mount_point || strcmp(fs, "ext4") != 0)) {
@@ -126,7 +126,7 @@ int cmd_create(int argc, char *argv[]) {
             long long val = strtoll(colon + 1, &endptr, 10);
             if (*endptr != '\0' || endptr == colon + 1 || val <= 0) {
                 fprintf(stderr, "Error: invalid carve size '%s'\n", colon + 1);
-                return 1;
+                return TV_ERR;
             }
             disks_arr[nd].carve_gb = val;
         } else {
@@ -140,7 +140,7 @@ int cmd_create(int argc, char *argv[]) {
 
     if (nd == 0) {
         fprintf(stderr, "Error: no disks specified\n");
-        return 1;
+        return TV_ERR;
     }
 
     printf("=== TieredVol: Creating '%s' ===\n", name);
@@ -189,13 +189,13 @@ int cmd_create(int argc, char *argv[]) {
                         "       WARNING: Removing the volume will destroy all data on it.\n"
                         "       Please back up your data before proceeding.\n",
                         disks_arr[i].disk, target);
-                return 1;
+                return TV_ERR;
             }
         }
 
         if (disks_arr[i].size_gb <= 1) {
             fprintf(stderr, "Error: /dev/%s size not detected or too small\n", disks_arr[i].disk);
-            return 1;
+            return TV_ERR;
         }
 
         if (disks_arr[i].carve_gb <= 0) {
@@ -204,7 +204,7 @@ int cmd_create(int argc, char *argv[]) {
         if (disks_arr[i].carve_gb > disks_arr[i].size_gb - 1) {
             fprintf(stderr, "Error: /dev/%s has %lldGB, cannot carve %lldGB\n",
                     disks_arr[i].disk, disks_arr[i].size_gb, disks_arr[i].carve_gb);
-            return 1;
+            return TV_ERR;
         }
 
         valid[valid_disks++] = disks_arr[i];
@@ -212,13 +212,13 @@ int cmd_create(int argc, char *argv[]) {
 
     if (valid_disks == 0) {
         fprintf(stderr, "Error: no usable disks (all are system disks)\n");
-        return 1;
+        return TV_ERR;
     }
 
     printf("  Benchmarking %d disks in parallel...\n", valid_disks);
-    if (run_parallel_bench(valid, valid_disks, 1, NULL, NULL) == 1) {
+    if (run_parallel_bench(valid, valid_disks, 1, NULL, NULL) != 0) {
         cleanup_create(name, valid, valid_disks);
-        return 1;
+        return TV_ERR;
     }
 
     qsort(valid, valid_disks, sizeof(disk_t), cmp_speed);
@@ -274,7 +274,7 @@ int cmd_create(int argc, char *argv[]) {
     char confirm[16] = "";
     if (!fgets(confirm, sizeof(confirm), stdin) || strncmp(confirm, "YES", 3) != 0) {
         fprintf(stderr, "\nAborted by user.\n");
-        return 1;
+        return TV_ERR;
     }
     printf("\n");
 
@@ -325,14 +325,14 @@ int cmd_create(int argc, char *argv[]) {
         if (tlen < 0 || tlen >= (int)sizeof(table)) {
             fprintf(stderr, "Error: dm table too long for %s\n", valid[i].disk);
             cleanup_create(name, valid, i);
-            return 1;
+            return TV_ERR;
         }
         char *dm_argv[] = {"sudo", "dmsetup", "create", target, NULL};
         int dm_ret = tv_exec_with_stdin("sudo", dm_argv, table);
         if (dm_ret != 0) {
             fprintf(stderr, "Error: dmsetup create failed for %s (exit=%d)\n", valid[i].disk, dm_ret);
             cleanup_create(name, valid, i);
-            return 1;
+            return TV_ERR;
         }
         char devpath[128];
         snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
@@ -340,7 +340,7 @@ int cmd_create(int argc, char *argv[]) {
         if (stat(devpath, &st) != 0) {
             fprintf(stderr, "Error: failed to create %s\n", target);
             cleanup_create(name, valid, i);
-            return 1;
+            return TV_ERR;
         }
         printf("  Created %s (%lldGB)\n", target, valid[i].carve_gb);
     }
@@ -366,7 +366,7 @@ int cmd_create(int argc, char *argv[]) {
                 fprintf(stderr, "Error: cannot open %s: %s\n", devpath, strerror(errno));
                 for (int j = 0; j < i; j++) close(tv_disks[j].fd);
                 cleanup_create(name, valid, valid_disks);
-                return 1;
+                return TV_ERR;
             }
         }
 
@@ -385,7 +385,7 @@ int cmd_create(int argc, char *argv[]) {
             fprintf(stderr, "Error: failed to build segments\n");
             for (int i = 0; i < n_tv_disks; i++) close(tv_disks[i].fd);
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
 
         meta.segment_count = (uint32_t)nsegs;
@@ -410,7 +410,7 @@ int cmd_create(int argc, char *argv[]) {
             fprintf(stderr, "Error: failed to save metadata to %s\n", config_path);
             for (int i = 0; i < n_tv_disks; i++) close(tv_disks[i].fd);
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
         printf("  Metadata saved to %s\n", config_path);
 
@@ -419,7 +419,7 @@ int cmd_create(int argc, char *argv[]) {
         printf("\n=== Weighted I/O Scheduler volume '%s' created ===\n", name);
         printf("  Use tiered_io to manage this volume.\n");
         printf("  NOTE: This volume uses the weighted I/O scheduler, not LVM striping.\n");
-        return 0;
+        return TV_OK;
     }
 
     printf("Step 3: Creating LVM physical volumes...\n");
@@ -432,7 +432,7 @@ int cmd_create(int argc, char *argv[]) {
         if (tv_exec_run("pvcreate", pvcreate_argv) != 0) {
             fprintf(stderr, "Error: pvcreate failed for %s\n", target);
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
         printf("  PV: %s\n", devpath);
     }
@@ -457,7 +457,7 @@ int cmd_create(int argc, char *argv[]) {
             if (!args[argc_vg]) {
                 fprintf(stderr, "Error: out of memory\n");
                 for (int j = 5; j < argc_vg; j++) free(args[j]);
-                return 1;
+                return TV_ERR;
             }
             argc_vg++;
         }
@@ -467,7 +467,7 @@ int cmd_create(int argc, char *argv[]) {
         if (ret != 0) {
             fprintf(stderr, "Error: vgcreate failed for tv_vg_%s\n", name);
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
     }
     printf("  VG: tv_vg_%s\n", name);
@@ -484,7 +484,7 @@ int cmd_create(int argc, char *argv[]) {
         if (tv_exec_run("lvcreate", lv_argv) != 0) {
             fprintf(stderr, "Error: lvcreate failed\n");
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
     }
     printf("  LV: /dev/mapper/tv_vg_%s-tv_lv_%s (%d stripes, %dKB stripesize)\n",
@@ -501,7 +501,7 @@ int cmd_create(int argc, char *argv[]) {
         if (tv_exec_run(mkfs_name, mkfs_argv) != 0) {
             fprintf(stderr, "Error: mkfs.%s failed\n", fs);
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
     } else {
         printf("Step 6: Skipped formatting (raw)\n");
@@ -515,7 +515,7 @@ int cmd_create(int argc, char *argv[]) {
         if (tv_exec_sudo(mount_argv) != 0) {
             fprintf(stderr, "Error: mount failed\n");
             cleanup_create(name, valid, valid_disks);
-            return 1;
+            return TV_ERR;
         }
         printf("  Mounted at %s\n", mount_point);
     } else {
@@ -562,5 +562,5 @@ int cmd_create(int argc, char *argv[]) {
     printf("\nVerify with:\n");
     printf("  df -h %s\n", mount_point ? mount_point : lv_path);
 
-    return 0;
+    return TV_OK;
 }

@@ -66,20 +66,20 @@ static void reap_completed(TV_SCHED *sched) {
 }
 
 int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
-    if (!sched || !buf || len == 0) return -1;
+    if (!sched || !buf || len == 0) return TV_ERR;
 
     const uint8_t *src = (const uint8_t *)buf;
     uint64_t pos = 0;
 
     while (pos < len) {
-        if (g_shutdown_requested) return -1;
+        if (g_shutdown_requested) return TV_ERR;
         uint64_t space = sched->stripe_size - sched->sbuf_used;
 
         if (space == 0) {
             int head = sched->sbuf_head;
             TV_STRIPE_BUF *cur = &sched->sbuf[head];
             int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used, head);
-            if (nsub < 0) return -1;
+            if (nsub < 0) return TV_ERR;
             cur->in_flight = 1;
             cur->cqes_pending = nsub;
             sched->inflight++;
@@ -92,7 +92,7 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
             /* All buffers occupied — wait for one to fully complete */
             if (sched->inflight >= TV_BUF_COUNT) {
                 while (sched->inflight >= TV_BUF_COUNT) {
-                    if (g_shutdown_requested) return -1;
+                    if (g_shutdown_requested) return TV_ERR;
                     reap_completed(sched);
                     if (sched->inflight >= TV_BUF_COUNT) {
                         struct io_uring_cqe *cqe = NULL;
@@ -113,29 +113,29 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
                                     if (sched->inflight == inflight_before) {
                                         fprintf(stderr, "tv_write: CQE stuck (%d)\n",
                                                 sched->inflight);
-                                        return -1;
+                                        return TV_ERR;
                                     }
                                     continue;
                                 }
                                 if (r2 == -EINTR) {
-                                    if (g_shutdown_requested) return -1;
+                                    if (g_shutdown_requested) return TV_ERR;
                                     continue;
                                 }
                                 if (r2 < 0) {
                                     fprintf(stderr, "tv_write: wait_cqe failed: %s\n", strerror(-r2));
-                                    return -1;
+                                    return TV_ERR;
                                 }
                                 goto w_process;
                             }
                             continue;
                         }
                         if (r == -EINTR) {
-                            if (g_shutdown_requested) return -1;
+                            if (g_shutdown_requested) return TV_ERR;
                             continue;
                         }
                         if (r < 0) {
                             fprintf(stderr, "tv_write: wait_cqe failed: %s\n", strerror(-r));
-                            return -1;
+                            return TV_ERR;
                         }
 w_process:
                         {
@@ -178,7 +178,7 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
     if (!seg) {
         fprintf(stderr, "tv_flush: logical offset %lu not in any segment\n",
                 (unsigned long)logical);
-        return -1;
+        return TV_ERR;
     }
 
     uint64_t stripe_no = (logical - seg->logical_begin) / seg->stripe_size;
@@ -192,7 +192,7 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
         if (disk_bytes == 0) continue;
         if (seg->disk_index[i] >= (uint32_t)sched->ndisks) {
             fprintf(stderr, "tv_flush: invalid disk index %u\n", seg->disk_index[i]);
-            return -1;
+            return TV_ERR;
         }
         uint64_t write_bytes = (disk_bytes < remaining) ? disk_bytes : remaining;
         uint64_t disk_off = stripe_no * disk_bytes;
@@ -202,7 +202,7 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
                            (size_t)write_bytes, (off_t)disk_off, ud) < 0) {
             fprintf(stderr, "tv_flush: SQE allocation failed for disk %u\n",
                     seg->disk_index[i]);
-            return -1;
+            return TV_ERR;
         }
         buf_pos += write_bytes;
         remaining -= write_bytes;
@@ -211,21 +211,21 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
 
     if (tv_uring_submit(&sched->ring) < 0) {
         fprintf(stderr, "tv_flush: submit failed\n");
-        return -1;
+        return TV_ERR;
     }
     return submitted;
 }
 
 /* Explicit flush: submit current buffer if non-empty, then wait for ALL in-flight */
 int tv_flush(TV_SCHED *sched) {
-    if (!sched) return -1;
+    if (!sched) return TV_ERR;
 
     /* Submit current buffer if it has data */
     if (sched->sbuf_used > 0) {
         int head = sched->sbuf_head;
         TV_STRIPE_BUF *cur = &sched->sbuf[head];
         int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used, head);
-        if (nsub < 0) return -1;
+        if (nsub < 0) return TV_ERR;
         cur->in_flight = 1;
         cur->cqes_pending = nsub;
         sched->inflight++;
@@ -236,7 +236,7 @@ int tv_flush(TV_SCHED *sched) {
 
     /* Wait for ALL in-flight I/Os */
     while (sched->inflight > 0) {
-        if (g_shutdown_requested) return -1;
+        if (g_shutdown_requested) return TV_ERR;
         /* Drain any already-completed CQEs before blocking wait */
         reap_completed(sched);
         if (sched->inflight == 0) break;
@@ -272,24 +272,24 @@ int tv_flush(TV_SCHED *sched) {
                     continue;
                 }
                 if (r2 == -EINTR) {
-                    if (g_shutdown_requested) return -1;
+                    if (g_shutdown_requested) return TV_ERR;
                     continue;
                 }
                 if (r2 < 0) {
                     fprintf(stderr, "tv_flush: wait_cqe failed: %s\n", strerror(-r2));
-                    return -1;
+                    return TV_ERR;
                 }
                 goto process_cqe;
             }
             continue;
         }
         if (ret == -EINTR) {
-            if (g_shutdown_requested) return -1;
+            if (g_shutdown_requested) return TV_ERR;
             continue;
         }
         if (ret < 0) {
             fprintf(stderr, "tv_flush: wait_cqe failed: %s\n", strerror(-ret));
-            return -1;
+            return TV_ERR;
         }
 process_cqe:
         {
@@ -309,23 +309,23 @@ process_cqe:
 }
 
 int tv_sched_seek(TV_SCHED *sched, uint64_t offset) {
-    if (!sched) return -1;
+    if (!sched) return TV_ERR;
     if (offset % sched->stripe_size != 0) {
         fprintf(stderr, "tv_sched_seek: offset %lu is not stripe-aligned (%lu)\n",
                 (unsigned long)offset, (unsigned long)sched->stripe_size);
-        return -1;
+        return TV_ERR;
     }
-    if (tv_flush(sched) < 0) return -1;
+    if (tv_flush(sched) < 0) return TV_ERR;
     sched->sbuf_logical = offset;
     sched->sbuf_used = 0;
     return 0;
 }
 
 int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
-    if (!sched || !buf || len == 0) return -1;
+    if (!sched || !buf || len == 0) return TV_ERR;
 
     /* Flush any pending writes first */
-    if (tv_flush(sched) < 0) return -1;
+    if (tv_flush(sched) < 0) return TV_ERR;
 
     uint8_t *dst = (uint8_t *)buf;
     uint64_t pos = 0;
@@ -339,7 +339,7 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
             TV_MAP map = tv_map_logical(offset + pos, sched->meta);
             if (map.disk < 0 || map.disk >= sched->ndisks) {
                 fprintf(stderr, "tv_read: invalid disk index %d\n", map.disk);
-                return -1;
+                return TV_ERR;
             }
             uint64_t chunk = len - pos;
             if (chunk > map.length) chunk = map.length;
@@ -350,7 +350,7 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
             if (tv_uring_read(&sched->ring, fd, dst + pos,
                               (size_t)chunk, (off_t)map.offset) < 0) {
                 fprintf(stderr, "tv_read: cannot allocate SQE for disk %d\n", map.disk);
-                return -1;
+                return TV_ERR;
             }
             n_sqes++;
             pos += chunk;
@@ -362,7 +362,7 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
         /* Single submit — all disks in stripe run in parallel */
         if (tv_uring_submit(&sched->ring) < 0) {
             fprintf(stderr, "tv_read: submit failed\n");
-            return -1;
+            return TV_ERR;
         }
 
         /* Wait for all completions */
@@ -370,7 +370,7 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
             int res = tv_uring_wait(&sched->ring);
             if (res < 0) {
                 fprintf(stderr, "tv_read: I/O error\n");
-                return -1;
+                return TV_ERR;
             }
         }
     }

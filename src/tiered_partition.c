@@ -17,7 +17,7 @@ uint64_t tv_compute_stripe_size(uint32_t *weights, int nweights, uint32_t chunk_
 }
 
 int tv_build_segments(TV_DISK *disks, int ndisks, TV_SEGMENT *segs, int *nsegs) {
-    if (ndisks <= 0 || !disks || !segs || !nsegs) return -1;
+    if (ndisks <= 0 || !disks || !segs || !nsegs) return TV_ERR;
     *nsegs = 0;
 
     /* Find slowest speed */

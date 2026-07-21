@@ -15,19 +15,19 @@
 #define WARMUP_DEFAULT_BYTES (2LL * 1024 * 1024 * 1024)
 
 int tv_benchmark(const char *disk_path, uint64_t *speed_out, int warmup) {
-    if (!disk_path || !speed_out) return -1;
+    if (!disk_path || !speed_out) return TV_ERR;
     *speed_out = 0;
 
     int fd = open(disk_path, O_RDWR | O_DIRECT);
     if (fd < 0) {
         fprintf(stderr, "benchmark: cannot open '%s': %s\n", disk_path, strerror(errno));
-        return -1;
+        return TV_ERR;
     }
 
     void *buf = NULL;
     if (posix_memalign(&buf, BENCH_RAW_BLOCK, BENCH_RAW_SIZE) != 0) {
         close(fd);
-        return -1;
+        return TV_ERR;
     }
 
     memset(buf, 0xAB, BENCH_RAW_SIZE);
@@ -38,7 +38,7 @@ int tv_benchmark(const char *disk_path, uint64_t *speed_out, int warmup) {
         fprintf(stderr, "benchmark: cannot get device size for '%s': %s\n", disk_path, strerror(errno));
         free(buf);
         close(fd);
-        return -1;
+        return TV_ERR;
     }
     off_t bench_offset = 0;
     if (dev_size > (off_t)BENCH_RAW_SIZE * BENCH_RAW_RUNS + 1024 * 1024) {
@@ -80,7 +80,7 @@ int tv_benchmark(const char *disk_path, uint64_t *speed_out, int warmup) {
                 fprintf(stderr, "benchmark: write error on '%s': %s\n", disk_path, strerror(errno));
                 free(buf);
                 close(fd);
-                return -1;
+                return TV_ERR;
             }
             written += n;
         }
@@ -99,5 +99,5 @@ int tv_benchmark(const char *disk_path, uint64_t *speed_out, int warmup) {
     uint64_t total = (uint64_t)BENCH_RAW_SIZE * BENCH_RAW_RUNS;
     *speed_out = (uint64_t)((double)total / elapsed / (1024.0 * 1024.0));
 
-    return 0;
+    return TV_OK;
 }

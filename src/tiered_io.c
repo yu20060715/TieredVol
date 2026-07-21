@@ -90,7 +90,7 @@ static int cmd_read(TV_SCHED *sched, uint64_t offset, uint64_t len) {
     uint8_t *buf = NULL;
     if (posix_memalign((void **)&buf, 512, (size_t)len) != 0) {
         fprintf(stderr, "Error: cannot allocate %lu bytes\n", (unsigned long)len);
-        return -1;
+        return TV_ERR;
     }
 
     fprintf(stderr, "Reading %lu bytes from offset %lu...\n",
@@ -100,7 +100,7 @@ static int cmd_read(TV_SCHED *sched, uint64_t offset, uint64_t len) {
     if (ret < 0) {
         fprintf(stderr, "Error: tv_read failed\n");
         free(buf);
-        return -1;
+        return TV_ERR;
     }
 
     /* Write to stdout */
@@ -111,7 +111,7 @@ static int cmd_read(TV_SCHED *sched, uint64_t offset, uint64_t len) {
             if (errno == EINTR) continue;
             fprintf(stderr, "Error: write to stdout failed: %s\n", strerror(errno));
             free(buf);
-            return -1;
+            return TV_ERR;
         }
         written += n;
     }
@@ -125,7 +125,7 @@ static int cmd_write(TV_SCHED *sched, uint64_t offset, uint64_t len) {
     uint8_t *buf = NULL;
     if (posix_memalign((void **)&buf, 4096, (size_t)len) != 0) {
         fprintf(stderr, "Error: cannot allocate %lu bytes\n", (unsigned long)len);
-        return -1;
+        return TV_ERR;
     }
 
     /* Read from stdin */
@@ -136,7 +136,7 @@ static int cmd_write(TV_SCHED *sched, uint64_t offset, uint64_t len) {
             if (errno == EINTR) continue;
             fprintf(stderr, "Error: read from stdin failed: %s\n", strerror(errno));
             free(buf);
-            return -1;
+            return TV_ERR;
         }
         if (n == 0) break; /* EOF */
         total += n;
@@ -148,21 +148,21 @@ static int cmd_write(TV_SCHED *sched, uint64_t offset, uint64_t len) {
     if (tv_sched_seek(sched, offset) < 0) {
         fprintf(stderr, "Error: tv_sched_seek failed\n");
         free(buf);
-        return -1;
+        return TV_ERR;
     }
 
     int ret = tv_write(sched, buf, total);
     if (ret < 0) {
         fprintf(stderr, "Error: tv_write failed\n");
         free(buf);
-        return -1;
+        return TV_ERR;
     }
 
     ret = tv_flush(sched);
     if (ret < 0) {
         fprintf(stderr, "Error: tv_flush failed\n");
         free(buf);
-        return -1;
+        return TV_ERR;
     }
 
     fprintf(stderr, "Write complete (%lu bytes)\n", (unsigned long)total);

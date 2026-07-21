@@ -13,6 +13,9 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #define TV_CHUNK_SIZE   (1024 * 1024)
 #define TV_BUF_COUNT    64
 #define TV_CQE_TIMEOUT_SEC      5
+#define TV_OK       0
+#define TV_ERR      (-1)
+
 #define TV_CQE_RETRY_SEC       30
 
 #define TV_ESTIMATED_EFFICIENCY 0.94

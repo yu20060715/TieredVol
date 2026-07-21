@@ -8,7 +8,7 @@
 
 int tv_exec_run(const char *path, char *const argv[]) {
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) return TV_ERR;
     if (pid == 0) {
         execvp(path, argv);
         _exit(127);
@@ -20,7 +20,7 @@ int tv_exec_run(const char *path, char *const argv[]) {
 
 int tv_exec_quiet(const char *path, char *const argv[]) {
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) return TV_ERR;
     if (pid == 0) {
         int fd = open("/dev/null", O_WRONLY);
         if (fd >= 0) {
@@ -38,7 +38,7 @@ int tv_exec_quiet(const char *path, char *const argv[]) {
 
 int tv_exec_sudo(char *const argv[], int quiet) {
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) return TV_ERR;
     if (pid == 0) {
         if (quiet) {
             int devnull = open("/dev/null", O_WRONLY);
@@ -59,9 +59,9 @@ int tv_exec_sudo(char *const argv[], int quiet) {
 
 int tv_exec_capture(const char *path, char *const argv[], char *out, size_t outsize) {
     int pfd[2];
-    if (pipe(pfd) < 0) return -1;
+    if (pipe(pfd) < 0) return TV_ERR;
     pid_t pid = fork();
-    if (pid < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return TV_ERR; }
     if (pid == 0) {
         close(pfd[0]);
         dup2(pfd[1], STDOUT_FILENO);
@@ -87,9 +87,9 @@ int tv_exec_capture(const char *path, char *const argv[], char *out, size_t outs
 
 int tv_exec_with_stdin(const char *path, char *const argv[], const char *stdin_data) {
     int pfd[2];
-    if (pipe(pfd) < 0) return -1;
+    if (pipe(pfd) < 0) return TV_ERR;
     pid_t pid = fork();
-    if (pid < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return TV_ERR; }
     if (pid == 0) {
         close(pfd[1]);
         dup2(pfd[0], STDIN_FILENO);

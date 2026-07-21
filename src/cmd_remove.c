@@ -26,12 +26,12 @@ int cmd_remove(int argc, char *argv[]) {
 
     if (!name) {
         fprintf(stderr, "Usage: tiered_setup --remove --name NAME\n");
-        return 1;
+        return TV_ERR;
     }
 
     if (!tiered_is_valid_name(name)) {
         fprintf(stderr, "Error: invalid name '%s'\n", name);
-        return 1;
+        return TV_ERR;
     }
 
     printf("=== TieredVol: Removing '%s' ===\n", name);
@@ -113,7 +113,7 @@ int cmd_remove(int argc, char *argv[]) {
         }
 
         printf("\n=== Remove Complete ===\n");
-        return 0;
+        return TV_OK;
     }
 
     /* LVM volume path */
@@ -138,12 +138,12 @@ int cmd_remove(int argc, char *argv[]) {
 
         if (ntargets == 0) {
             fprintf(stderr, "Error: no devices found in config %s\n", conf_path);
-            return 1;
+            return TV_ERR;
         }
     } else {
         fprintf(stderr, "Error: no config found for '%s' at %s\n", name, conf_path);
         fprintf(stderr, "  Run: sudo tiered_setup --remove --name %s\n", name);
-        return 1;
+        return TV_ERR;
     }
 
     printf("Checking mounts...\n");
@@ -221,7 +221,7 @@ int cmd_remove(int argc, char *argv[]) {
     }
 
     printf("\n=== Remove Complete ===\n");
-    return 0;
+    return TV_OK;
 }
 
 int cmd_status(void) {
@@ -263,5 +263,5 @@ int cmd_status(void) {
         }
     }
 
-    return 0;
+    return TV_OK;
 }

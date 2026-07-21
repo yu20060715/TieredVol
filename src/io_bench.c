@@ -27,7 +27,7 @@ int open_disks(TV_METADATA *meta, TV_DISK *disks, int use_direct) {
             fprintf(stderr, "Error: cannot open %s: %s\n",
                     devpath, strerror(errno));
             for (int j = 0; j < (int)i; j++) close(disks[j].fd);
-            return -1;
+            return TV_ERR;
         }
         fprintf(stderr, "Opened %s (fd=%d)%s\n", devpath, disks[i].fd,
                 use_direct ? " [O_DIRECT]" : "");
@@ -61,7 +61,7 @@ int do_warmup_exec(TV_SCHED *sched, TV_METADATA *meta) {
     if (warmup_size > 4ULL * 1024 * 1024 * 1024)
         warmup_size = 4ULL * 1024 * 1024 * 1024;
     uint8_t *wbuf = malloc((size_t)sched->stripe_size);
-    if (!wbuf) return -1;
+    if (!wbuf) return TV_ERR;
     memset(wbuf, 0xAB, (size_t)sched->stripe_size);
     fprintf(stderr, "Warming up SLC cache (%luMB, 20%% of volume)...\n",
             (unsigned long)(warmup_size / (1024 * 1024)));
@@ -110,7 +110,7 @@ int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA *meta)
     uint8_t *buf = malloc((size_t)(sched->stripe_size));
     if (!buf) {
         fprintf(stderr, "Error: cannot allocate buffer\n");
-        return -1;
+        return TV_ERR;
     }
     memset(buf, 0xAB, (size_t)sched->stripe_size);
 
@@ -136,7 +136,7 @@ int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA *meta)
             fprintf(stderr, "Error: tv_write failed at %lu bytes\n",
                     (unsigned long)written);
             free(buf);
-            return -1;
+            return TV_ERR;
         }
 
         written += chunk;
@@ -189,7 +189,7 @@ int cmd_bench_all(TV_METADATA *meta) {
     int ret = 0;
 
     TV_DISK disks[TV_MAX_DISKS];
-    if (open_disks(meta, disks, 1) < 0) return -1;
+    if (open_disks(meta, disks, 1) < 0) return TV_ERR;
 
     for (int phase = 0; phase < 2; phase++) {
         for (int i = 0; i < nsizes; i++) {
@@ -242,7 +242,7 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
     uint8_t *buf = NULL;
     if (posix_memalign((void **)&buf, 512, (size_t)sched->stripe_size) != 0) {
         fprintf(stderr, "Error: cannot allocate buffer\n");
-        return -1;
+        return TV_ERR;
     }
     memset(buf, 0xAB, (size_t)sched->stripe_size);
 
@@ -255,14 +255,14 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
         if (g_shutdown_requested) {
             fprintf(stderr, "\nShutdown requested\n");
             free(buf);
-            return -1;
+            return TV_ERR;
         }
         uint64_t chunk = sched->stripe_size;
         if (written + chunk > size) chunk = size - written;
         if (tv_write(sched, buf, chunk) < 0) {
             fprintf(stderr, "Error: write failed during read bench prep\n");
             free(buf);
-            return -1;
+            return TV_ERR;
         }
         written += chunk;
     }
@@ -286,7 +286,7 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
     if (tv_sched_seek(sched, 0) < 0) {
         fprintf(stderr, "Error: seek failed for read bench\n");
         free(buf);
-        return -1;
+        return TV_ERR;
     }
 
     fprintf(stderr, "  Reading %lu MB...\n", (unsigned long)(size / 1048576));
@@ -308,7 +308,7 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
             fprintf(stderr, "Error: tv_read failed at %lu bytes\n",
                     (unsigned long)read_total);
             free(buf);
-            return -1;
+            return TV_ERR;
         }
         read_total += chunk;
 
@@ -344,7 +344,7 @@ int cmd_bench_read_all(TV_METADATA *meta) {
     int ret = 0;
 
     TV_DISK disks[TV_MAX_DISKS];
-    if (open_disks(meta, disks, 1) < 0) return -1;
+    if (open_disks(meta, disks, 1) < 0) return TV_ERR;
 
     for (int i = 0; i < nsizes; i++) {
         if (g_shutdown_requested) { ret = -1; break; }
@@ -378,7 +378,7 @@ int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, 
         fd = open(path, O_RDWR | O_DIRECT);
         if (fd < 0) {
             fprintf(stderr, "Error: cannot open %s: %s\n", path, strerror(errno));
-            return -1;
+            return TV_ERR;
         }
         fprintf(stderr, "Raw device: %s [O_DIRECT]\n", path);
     } else {
@@ -391,7 +391,7 @@ int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, 
         fd = open(benchfile, flags, 0644);
         if (fd < 0) {
             fprintf(stderr, "Error: cannot open %s: %s\n", benchfile, strerror(errno));
-            return -1;
+            return TV_ERR;
         }
         fprintf(stderr, "Benchmark file: %s%s\n", benchfile,
                 use_direct ? " [O_DIRECT]" : "");
@@ -403,7 +403,7 @@ int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, 
     if (posix_memalign((void **)&buf, 512, (size_t)chunk_size) != 0) {
         fprintf(stderr, "Error: cannot allocate buffer\n");
         close(fd);
-        return -1;
+        return TV_ERR;
     }
     memset(buf, 0xAB, (size_t)chunk_size);
 

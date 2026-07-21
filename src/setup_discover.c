@@ -113,5 +113,5 @@ int cmd_list(void) {
     }
     printf("\n[ROOT] = System disk, cannot be carved with dm-linear\n");
     printf("[MOUNTED] = Mounted partition, cannot be carved with dm-linear\n");
-    return 0;
+    return TV_OK;
 }
