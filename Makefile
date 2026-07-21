@@ -59,29 +59,24 @@ test_metadata: tests/test_metadata.c src/tiered_sched.h $(SCHED_OBJS)
 test_sched: tests/test_sched.c src/tiered_sched.h $(SCHED_OBJS)
 	$(CC) $(CFLAGS) -o $@ $< $(SCHED_OBJS) -luring
 
-TEST_LOOP_IMG = /tmp/tv_test.img
-TEST_LOOP_DEV = /dev/loop0
-
 test_integrity: tests/test_integrity.c src/tiered_sched.h $(SCHED_OBJS)
 	$(CC) $(CFLAGS) -o $@ $< $(SCHED_OBJS) -luring
-
-setup-test-device:
-	dd if=/dev/zero of=$(TEST_LOOP_IMG) bs=1M count=100 2>/dev/null
-	losetup $(TEST_LOOP_DEV) $(TEST_LOOP_IMG) 2>/dev/null; true
-
-teardown-test-device:
-	-losetup -d $(TEST_LOOP_DEV) 2>/dev/null
-	-rm -f $(TEST_LOOP_IMG)
 
 test: test_common test_mapper test_partition test_metadata test_sched test_integrity
 	@echo "=== test_common ===" && ./test_common && \
 	echo "=== test_mapper ===" && ./test_mapper && \
 	echo "=== test_partition ===" && ./test_partition && \
 	echo "=== test_metadata ===" && ./test_metadata && \
-	echo "=== test_sched ===" && ./test_sched && \
-	echo "=== test_integrity ===" && ./test_integrity $(TEST_LOOP_DEV)
+	echo "=== test_sched ===" && ./test_sched
 
-test-full: setup-test-device test teardown-test-device
+test-full:
+	$(MAKE) test
+	sudo losetup -d /dev/loop0 2>/dev/null; true
+	sudo dd if=/dev/zero of=/tmp/tv_test.img bs=1M count=100
+	sudo losetup /dev/loop0 /tmp/tv_test.img
+	./test_integrity /dev/loop0
+	sudo losetup -d /dev/loop0
+	sudo rm -f /tmp/tv_test.img
 
 install: all
 	install -m 755 tiered_setup $(DESTDIR)$(PREFIX)/bin/tiered_setup
@@ -111,4 +106,4 @@ clean:
 	rm -f tiered_setup tiered_io test_common test_mapper test_partition test_metadata test_sched test_integrity
 	rm -f src/*.o
 
-.PHONY: all install uninstall clean test
+.PHONY: all install uninstall clean test test-full

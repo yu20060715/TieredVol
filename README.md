@@ -171,7 +171,8 @@ sudo pacman -S lvm2 gcc make liburing
 
 ```bash
 make              # Build tiered_setup + tiered_io
-make test         # Run all tests (105 assertions, 6 test suites)
+make test              # Unit tests (94 assertions, 5 suites, no sudo)
+sudo make test-full    # Unit + integration tests (105 assertions, 6 suites)
 make clean        # Remove all build artifacts
 sudo make install # Install to /usr/local/bin/
 ```
