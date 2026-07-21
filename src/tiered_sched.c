@@ -311,8 +311,8 @@ process_cqe:
 int tv_sched_seek(TV_SCHED *sched, uint64_t offset) {
     if (!sched) return -1;
     if (offset % sched->stripe_size != 0) {
-        fprintf(stderr, "tv_sched_seek: offset %lu is not stripe-aligned (%u)\n",
-                (unsigned long)offset, sched->stripe_size);
+        fprintf(stderr, "tv_sched_seek: offset %lu is not stripe-aligned (%lu)\n",
+                (unsigned long)offset, (unsigned long)sched->stripe_size);
         return -1;
     }
     if (tv_flush(sched) < 0) return -1;

@@ -81,6 +81,8 @@ test: test_common test_mapper test_partition test_metadata test_sched test_integ
 	echo "=== test_sched ===" && ./test_sched && \
 	echo "=== test_integrity ===" && ./test_integrity $(TEST_LOOP_DEV)
 
+test-full: setup-test-device test teardown-test-device
+
 install: all
 	install -m 755 tiered_setup $(DESTDIR)$(PREFIX)/bin/tiered_setup
 	install -m 755 tiered_io $(DESTDIR)$(PREFIX)/bin/tiered_io

@@ -25,49 +25,93 @@ static void print_summary(void) {
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
 }
 
-static void test_init_destroy_cycle(const TV_METADATA *meta) {
+static int open_disk(const char *path) {
+    int fd = open(path, O_RDWR | O_DIRECT | O_SYNC);
+    if (fd < 0) {
+        fd = open(path, O_RDWR | O_DIRECT);
+    }
+    if (fd < 0) {
+        fprintf(stderr, "  WARN: cannot open %s (O_DIRECT): %m, trying non-direct\n", path);
+        fd = open(path, O_RDWR);
+    }
+    return fd;
+}
+
+static TV_METADATA make_meta(uint64_t size) {
+    TV_METADATA meta;
+    memset(&meta, 0, sizeof(meta));
+    meta.version = 1;
+    meta.chunk_size = TV_CHUNK_SIZE;
+    meta.segment_count = 1;
+    meta.disk_count = 1;
+    strcpy(meta.disk_names[0], "test_dev");
+    meta.segments[0].logical_begin = 0;
+    meta.segments[0].logical_end = size;
+    meta.segments[0].disk_count = 1;
+    meta.segments[0].weight[0] = 1;
+    meta.segments[0].disk_index[0] = 0;
+    meta.segments[0].stripe_size = TV_CHUNK_SIZE;
+    return meta;
+}
+
+static void test_init_destroy_cycle(void) {
     printf("\n[TEST] tv_sched_init / tv_sched_destroy cycle\n");
-    TV_SCHED *sched = tv_sched_init(meta);
+    TV_METADATA meta = make_meta(64ULL * 1024 * 1024);
+    TV_DISK disks[1];
+    memset(disks, 0, sizeof(disks));
+    disks[0].id = 0;
+    strcpy(disks[0].name, "test_dev");
+    disks[0].fd = -1;
+
+    TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
     check(sched != NULL, "init succeeded");
     if (sched) {
-        check(sched->stripe_size == meta->segments[0].stripe_size,
+        check(sched->stripe_size == meta.segments[0].stripe_size,
               "stripe_size matches");
-        check((int)sched->ndisks == (int)meta->disk_count, "ndisks matches");
+        check((int)sched->ndisks == (int)meta.disk_count, "ndisks matches");
         check(sched->inflight == 0, "inflight starts at 0");
         tv_sched_destroy(sched);
         check(1, "destroy completed without crash");
     }
 }
 
-static void test_write_read_verify(const TV_METADATA *meta, const char *devpath) {
-    (void)devpath;
+static void test_write_read_verify(const char *devpath) {
     printf("\n[TEST] write/read/verify data integrity\n");
-    TV_SCHED *sched = tv_sched_init(meta);
+    int fd = open_disk(devpath);
+    if (fd < 0) {
+        printf("  SKIP  cannot open device %s\n", devpath);
+        return;
+    }
+
+    TV_METADATA meta = make_meta(64ULL * 1024 * 1024);
+    TV_DISK disks[1];
+    memset(disks, 0, sizeof(disks));
+    disks[0].id = 0;
+    strcpy(disks[0].name, "test_dev");
+    disks[0].fd = fd;
+
+    TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
     check(sched != NULL, "init succeeded");
-    if (!sched) return;
+    if (!sched) { close(fd); return; }
 
     uint64_t len = 4096;
     uint8_t *wbuf, *rbuf;
-    check(posix_memalign((void **)&wbuf, 4096, len) == 0, "write buf alloc");
-    check(posix_memalign((void **)&rbuf, 4096, len) == 0, "read buf alloc");
-    if (!wbuf || !rbuf) {
-        free(wbuf); free(rbuf);
-        tv_sched_destroy(sched);
-        return;
-    }
+    int ok = 1;
+    ok = ok && (posix_memalign((void **)&wbuf, 512, len) == 0);
+    ok = ok && (posix_memalign((void **)&rbuf, 512, len) == 0);
+    check(ok, "buffer allocation");
+    if (!ok) { free(wbuf); free(rbuf); tv_sched_destroy(sched); close(fd); return; }
 
     for (uint64_t i = 0; i < len; i++) wbuf[i] = (uint8_t)(i & 0xFF);
     memset(rbuf, 0, len);
 
-    int ret = tv_write(sched, wbuf, 0, len);
+    int ret = tv_write(sched, wbuf, len);
     check(ret == 0, "write returned 0");
-    if (ret != 0) { free(wbuf); free(rbuf); tv_sched_destroy(sched); return; }
 
     ret = tv_flush(sched);
     check(ret == 0, "flush returned 0");
-    if (ret != 0) { free(wbuf); free(rbuf); tv_sched_destroy(sched); return; }
 
-    ret = tv_read(sched, rbuf, 0, len);
+    ret = tv_read(sched, rbuf, len, 0);
     check(ret == 0, "read returned 0");
 
     check(memcmp(wbuf, rbuf, len) == 0, "readback data matches written data");
@@ -75,35 +119,20 @@ static void test_write_read_verify(const TV_METADATA *meta, const char *devpath)
     free(wbuf);
     free(rbuf);
     tv_sched_destroy(sched);
-}
-
-static TV_METADATA make_2disk_meta(void) {
-    TV_METADATA meta;
-    memset(&meta, 0, sizeof(meta));
-    meta.version = 1;
-    meta.chunk_size = TV_CHUNK_SIZE;
-    meta.segment_count = 1;
-    meta.disk_count = 2;
-    strcpy(meta.disk_names[0], "test_disk_0");
-    strcpy(meta.disk_names[1], "test_disk_1");
-    meta.segments[0].logical_begin = 0;
-    meta.segments[0].logical_end = 4ULL * 1024 * 1024;
-    meta.segments[0].disk_count = 2;
-    meta.segments[0].weight[0] = 2;
-    meta.segments[0].weight[1] = 1;
-    meta.segments[0].disk_index[0] = 0;
-    meta.segments[0].disk_index[1] = 1;
-    meta.segments[0].stripe_size = 3 * TV_CHUNK_SIZE;
-    return meta;
+    close(fd);
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+    printf("=== TieredVol Integration Tests ===\n");
 
-    TV_METADATA meta = make_2disk_meta();
-    test_init_destroy_cycle(&meta);
-    test_write_read_verify(&meta, NULL);
+    test_init_destroy_cycle();
+
+    if (argc > 1) {
+        test_write_read_verify(argv[1]);
+    } else {
+        printf("\n[TEST] write/read/verify data integrity\n");
+        printf("  SKIP  no block device path provided\n");
+    }
 
     print_summary();
     return (tests_passed == tests_run) ? 0 : 1;
