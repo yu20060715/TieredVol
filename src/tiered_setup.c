@@ -44,19 +44,19 @@ static void cleanup_create(const char *name, disk_t *valid, int valid_disks) {
         char umount_lv[256];
         snprintf(umount_lv, sizeof(umount_lv), "/dev/mapper/tv_vg_%s-tv_lv_%s", name, name);
         char *umount_argv[] = {"sudo", "umount", umount_lv, NULL};
-        (void)run_quiet("sudo", umount_argv);
+        (void)tv_exec_quiet("sudo", umount_argv);
     }
     {
         char full_lv[256];
         snprintf(full_lv, sizeof(full_lv), "tv_vg_%s/tv_lv_%s", name, name);
         char *const lv_argv[] = {"lvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", full_lv, NULL};
-        (void)safe_execvp("lvremove", lv_argv);
+        (void)tv_exec_run("lvremove", lv_argv);
     }
     {
         char vg_name[128];
         snprintf(vg_name, sizeof(vg_name), "tv_vg_%s", name);
         char *const vg_argv2[] = {"vgremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", vg_name, NULL};
-        (void)safe_execvp("vgremove", vg_argv2);
+        (void)tv_exec_run("vgremove", vg_argv2);
     }
     for (int i = 0; i < valid_disks; i++) {
         char target[64];
@@ -65,11 +65,11 @@ static void cleanup_create(const char *name, disk_t *valid, int valid_disks) {
             char devpath[128];
             snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
             char *const pv_argv[] = {"pvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-ff", "-y", devpath, NULL};
-            (void)safe_execvp("pvremove", pv_argv);
+            (void)tv_exec_run("pvremove", pv_argv);
         }
         {
             char *const dm_argv[] = {"sudo", "dmsetup", "remove", target, NULL};
-            (void)run_sudo_argv(dm_argv);
+            (void)tv_exec_sudo(dm_argv);
         }
     }
     fprintf(stderr, "  Rollback complete.\n");
@@ -301,26 +301,26 @@ static int cmd_create(int argc, char *argv[]) {
         find_mount_for_disk(valid[i].disk, mp, sizeof(mp));
         if (mp[0]) {
             char *umount_argv[] = {"sudo", "umount", mp, NULL};
-            (void)run_sudo_argv(umount_argv);
+            (void)tv_exec_sudo(umount_argv);
         }
         char target[64];
         make_target(target, sizeof(target), valid[i].disk);
         {
             char *const dm_argv[] = {"sudo", "dmsetup", "remove", target, NULL};
-            (void)run_sudo_quiet(dm_argv);
+            (void)tv_exec_sudo(dm_argv, 1);
         }
     }
     {
         char full_lv[256];
         snprintf(full_lv, sizeof(full_lv), "tv_vg_%s/tv_lv_%s", name, name);
         char *const lv_argv[] = {"lvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", full_lv, NULL};
-        (void)run_quiet("lvremove", lv_argv);
+        (void)tv_exec_quiet("lvremove", lv_argv);
     }
     {
         char vg_name[128];
         snprintf(vg_name, sizeof(vg_name), "tv_vg_%s", name);
         char *const vg_argv[] = {"vgremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", vg_name, NULL};
-        (void)run_quiet("vgremove", vg_argv);
+        (void)tv_exec_quiet("vgremove", vg_argv);
     }
     for (int i = 0; i < valid_disks; i++) {
         char target[64];
@@ -328,7 +328,7 @@ static int cmd_create(int argc, char *argv[]) {
         char devpath[128];
         snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
         char *const pv_argv[] = {"pvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-ff", "-y", devpath, NULL};
-        (void)run_quiet("pvremove", pv_argv);
+        (void)tv_exec_quiet("pvremove", pv_argv);
     }
 
     printf("Step 2: Creating carved targets...\n");
@@ -446,7 +446,7 @@ static int cmd_create(int argc, char *argv[]) {
         char devpath[128];
         snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", target);
         char *const pvcreate_argv[] = {"pvcreate", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", devpath, NULL};
-        if (safe_execvp("pvcreate", pvcreate_argv) != 0) {
+        if (tv_exec_run("pvcreate", pvcreate_argv) != 0) {
             fprintf(stderr, "Error: pvcreate failed for %s\n", target);
             cleanup_create(name, valid, valid_disks);
             return 1;
@@ -479,7 +479,7 @@ static int cmd_create(int argc, char *argv[]) {
             argc_vg++;
         }
         args[argc_vg] = NULL;
-        int ret = safe_execvp("vgcreate", args);
+        int ret = tv_exec_run("vgcreate", args);
         for (int i = 5; i < argc_vg; i++) free(args[i]);
         if (ret != 0) {
             fprintf(stderr, "Error: vgcreate failed for tv_vg_%s\n", name);
@@ -498,7 +498,7 @@ static int cmd_create(int argc, char *argv[]) {
         snprintf(stripe_str, sizeof(stripe_str), "%dk", stripe_size_kb);
         char free_arg[] = "100%FREE";
         char *const lv_argv[] = {"lvcreate", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-l", free_arg, "-i", stripes_str, "-I", stripe_str, "-n", lv_name, vg_name, NULL};
-        if (safe_execvp("lvcreate", lv_argv) != 0) {
+        if (tv_exec_run("lvcreate", lv_argv) != 0) {
             fprintf(stderr, "Error: lvcreate failed\n");
             cleanup_create(name, valid, valid_disks);
             return 1;
@@ -515,7 +515,7 @@ static int cmd_create(int argc, char *argv[]) {
         char mkfs_name[64];
         snprintf(mkfs_name, sizeof(mkfs_name), "mkfs.%s", fs);
         char *const mkfs_argv[] = {mkfs_name, lv_path, NULL};
-        if (safe_execvp(mkfs_name, mkfs_argv) != 0) {
+        if (tv_exec_run(mkfs_name, mkfs_argv) != 0) {
             fprintf(stderr, "Error: mkfs.%s failed\n", fs);
             cleanup_create(name, valid, valid_disks);
             return 1;
@@ -527,9 +527,9 @@ static int cmd_create(int argc, char *argv[]) {
     if (mount_point && strcmp(fs, "none") != 0) {
         printf("Step 7: Mounting...\n");
         char *mkdir_argv[] = {"sudo", "mkdir", "-p", mount_point, NULL};
-        (void)run_sudo_argv(mkdir_argv);
+        (void)tv_exec_sudo(mkdir_argv);
         char *mount_argv[] = {"sudo", "mount", lv_path, mount_point, NULL};
-        if (run_sudo_argv(mount_argv) != 0) {
+        if (tv_exec_sudo(mount_argv) != 0) {
             fprintf(stderr, "Error: mount failed\n");
             cleanup_create(name, valid, valid_disks);
             return 1;
@@ -555,11 +555,11 @@ static int cmd_create(int argc, char *argv[]) {
                 }
                 fclose(cf);
                 char *mkdir_argv[] = {"sudo", "mkdir", "-p", "/etc/tieredvol", NULL};
-                (void)run_sudo_argv(mkdir_argv);
+                (void)tv_exec_sudo(mkdir_argv);
                 char dest[512];
                 snprintf(dest, sizeof(dest), "/etc/tieredvol/%s.conf", name);
                 char *mv_argv[] = {"sudo", "mv", "-f", conf_path, dest, NULL};
-                int mv_ret = run_sudo_argv(mv_argv);
+                int mv_ret = tv_exec_sudo(mv_argv);
                 if (mv_ret != 0) {
                     fprintf(stderr, "Warning: failed to save config\n");
                     unlink(conf_path);
@@ -644,7 +644,7 @@ static int cmd_remove(int argc, char *argv[]) {
             int removed = 0;
             for (int retry = 0; retry < 3; retry++) {
                 char *const dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
-                if (run_sudo_argv(dm_argv) == 0) {
+                if (tv_exec_sudo(dm_argv) == 0) {
                     removed = 1;
                     break;
                 }
@@ -663,17 +663,17 @@ static int cmd_remove(int argc, char *argv[]) {
         printf("Removing scheduler metadata...\n");
         {
             char *rm_argv[] = {"sudo", "rm", "-f", sched_path, NULL};
-            (void)run_sudo_argv(rm_argv);
+            (void)tv_exec_sudo(rm_argv);
         }
         {
             char conf_path_cleanup[256];
             snprintf(conf_path_cleanup, sizeof(conf_path_cleanup), "/etc/tieredvol/%s.conf", name);
             char *rm_argv[] = {"sudo", "rm", "-f", conf_path_cleanup, NULL};
-            (void)run_sudo_argv(rm_argv);
+            (void)tv_exec_sudo(rm_argv);
         }
         {
             char *rmdir_argv[] = {"sudo", "rmdir", "/etc/tieredvol", NULL};
-            (void)run_sudo_argv(rmdir_argv);
+            (void)tv_exec_sudo(rmdir_argv);
         }
 
         printf("\n=== Remove Complete ===\n");
@@ -734,7 +734,7 @@ static int cmd_remove(int argc, char *argv[]) {
         char lv_path[256];
         snprintf(lv_path, sizeof(lv_path), "/dev/mapper/tv_vg_%s-tv_lv_%s", name, name);
         char *umount_argv[] = {"sudo", "umount", lv_path, NULL};
-        (void)run_sudo_argv(umount_argv);
+        (void)tv_exec_sudo(umount_argv);
     }
 
     printf("Removing LV...\n");
@@ -742,7 +742,7 @@ static int cmd_remove(int argc, char *argv[]) {
         char full_lv[256];
         snprintf(full_lv, sizeof(full_lv), "tv_vg_%s/tv_lv_%s", name, name);
         char *const lv_argv[] = {"lvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", full_lv, NULL};
-        (void)safe_execvp("lvremove", lv_argv);
+        (void)tv_exec_run("lvremove", lv_argv);
     }
 
     printf("Removing VG...\n");
@@ -750,7 +750,7 @@ static int cmd_remove(int argc, char *argv[]) {
         char vg_name[128];
         snprintf(vg_name, sizeof(vg_name), "tv_vg_%s", name);
         char *const vg_argv[] = {"vgremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-f", vg_name, NULL};
-        (void)safe_execvp("vgremove", vg_argv);
+        (void)tv_exec_run("vgremove", vg_argv);
     }
 
     printf("Removing PV and dm targets...\n");
@@ -759,11 +759,11 @@ static int cmd_remove(int argc, char *argv[]) {
         snprintf(devpath, sizeof(devpath), "/dev/mapper/%s", targets[i]);
         {
             char *const pv_argv[] = {"pvremove", "--config", "devices{scan=[\"/dev/mapper\"] obtain_device_list_from_udev=0}", "-ff", "-y", devpath, NULL};
-            (void)safe_execvp("pvremove", pv_argv);
+            (void)tv_exec_run("pvremove", pv_argv);
         }
         {
             char *const dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
-            (void)run_sudo_argv(dm_argv);
+            (void)tv_exec_sudo(dm_argv);
         }
         printf("  Removed %s\n", targets[i]);
     }
@@ -771,9 +771,9 @@ static int cmd_remove(int argc, char *argv[]) {
     printf("Removing config...\n");
     {
         char *rm_argv[] = {"sudo", "rm", "-f", conf_path, NULL};
-        (void)run_sudo_argv(rm_argv);
+        (void)tv_exec_sudo(rm_argv);
         char *rmdir_argv[] = {"sudo", "rmdir", "/etc/tieredvol", NULL};
-        (void)run_sudo_argv(rmdir_argv);
+        (void)tv_exec_sudo(rmdir_argv);
     }
 
     printf("\n=== Remove Complete ===\n");
