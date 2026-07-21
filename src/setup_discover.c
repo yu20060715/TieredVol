@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
+#include "tiered_common.h"
 #include "setup_discover.h"
 
 long long sysfs_size_gb(const char *disk) {
