@@ -1,7 +1,5 @@
 # TieredVol Scheduler
 
-[中文說明 →](docs/README_CN.md)
-
 An experimental user-space weighted striping scheduler for heterogeneous storage devices.
 
 TieredVol Scheduler evaluates whether weighted striping — assigning I/O chunk sizes proportional to each disk's sequential bandwidth — can improve aggregate throughput when storage devices with different speeds (e.g., NVMe + SATA SSD) are combined.
@@ -80,6 +78,7 @@ sudo tiered_io --name fastpool --bench --size 128MB --warmup  # Sustained
 For implementation details, see:
 - [PARTITION_SPLITTING.md](docs/PARTITION_SPLITTING.md) — Weight calculation, capacity segmentation, offset mapping
 - [WEIGHTED_IO_SCHEDULER.md](docs/WEIGHTED_IO_SCHEDULER.md) — Three-layer architecture, io_uring dispatch, stripe buffer
+- [BENCHMARK-RESULTS.md](docs/BENCHMARK-RESULTS.md) — Benchmark results on B85 platform
 ---
 
 
@@ -171,8 +170,8 @@ sudo pacman -S lvm2 gcc make liburing
 
 ```bash
 make              # Build tiered_setup + tiered_io
-make test              # Unit tests (94 assertions, 5 suites, no sudo)
-sudo make test-full    # Unit + integration tests (105 assertions, 6 suites)
+make test              # Unit tests (101 assertions, 5 suites, no sudo)
+sudo make test-full    # Unit + integration tests (112 assertions, 6 suites)
 make clean        # Remove all build artifacts
 sudo make install # Install to /usr/local/bin/
 ```
@@ -192,11 +191,12 @@ sudo systemctl enable tieredvol-restore
 TieredVol/
 ├── README.md
 ├── LICENSE                     # MIT License
+├── benchmarks/                 # Raw benchmark data and summary
 ├── docs/
 │   ├── USAGE.md                # Detailed usage guide
-│   ├── PLAN.md                 # Improvement roadmap
 │   ├── PARTITION_SPLITTING.md  # Weighted striping algorithm
-│   └── WEIGHTED_IO_SCHEDULER.md # I/O dispatch implementation
+│   ├── WEIGHTED_IO_SCHEDULER.md # I/O dispatch implementation
+│   └── BENCHMARK-RESULTS.md    # Benchmark results on B85 platform
 ├── scripts/
 │   ├── install_deps.sh         # One-click dependency installer
 │   ├── test_scheduler.sh       # End-to-end scheduler test
@@ -204,26 +204,50 @@ TieredVol/
 │   └── tieredvol-restore.service
 ├── Makefile
 ├── src/
-│   ├── tiered_setup.c          # CLI backend
+│   ├── main.c                  # CLI entry point
 │   ├── tiered_common.h         # Shared validation
+│   ├── tiered_types.h          # Shared type definitions
 │   ├── version.h
 │   ├── tiered_sched.h          # Scheduler structs + API
 │   ├── tiered_sched.c          # Scheduler core
 │   ├── tiered_mapper.c         # Offset mapping
 │   ├── tiered_io_uring.c       # io_uring wrapper
+│   ├── tiered_io_uring.h       # io_uring interface
 │   ├── tiered_benchmark.c      # Initialization benchmark
 │   ├── tiered_partition.c      # Weight + segment calculation
 │   ├── tiered_metadata.c       # Metadata save/load
-│   └── tiered_io.c             # CLI I/O tool (read/write/bench/path)
+│   ├── tiered_io.c             # CLI I/O tool (read/write/bench/path)
+│   ├── io_bench.c              # Benchmark helpers
+│   ├── io_bench.h              # Benchmark interface
+│   ├── warmup.c                # SLC cache warm-up
+│   ├── warmup.h                # Warm-up interface
+│   ├── exec_helper.c           # External command execution
+│   ├── exec_helper.h           # Exec helper interface
+│   ├── setup_discover.c        # Disk discovery
+│   ├── setup_discover.h        # Discovery interface
+│   ├── setup_bench.c           # Setup benchmark logic
+│   ├── setup_bench.h           # Setup bench interface
+│   ├── cmd_create.c            # Volume creation command
+│   ├── cmd_create.h            # Create command interface
+│   ├── cmd_remove.c            # Volume removal command
+│   └── cmd_remove.h            # Remove command interface
 └── tests/
-    └── test_common.c
+    ├── test_common.c
+    ├── test_common.h
+    ├── test_mapper.c
+    ├── test_partition.c
+    ├── test_metadata.c
+    ├── test_sched.c
+    └── test_integrity.c
 ```
 
 ### Code Architecture
 
 | Module | Responsibility |
 |--------|---------------|
-| `tiered_setup.c` | CLI core: disk discovery, benchmark, dm-linear/LVM/scheduler create, rollback |
+| `main.c` | CLI entry point: argument dispatch, dependency checks |
+| `cmd_create.c` | Volume creation: dm-linear/LVM/create-scheduler, capacity carving, rollback |
+| `cmd_remove.c` | Volume removal: teardown dm-linear/LVM/scheduler targets |
 | `tiered_sched.c` | Scheduler core: init, write (buffer + flush), read (mapping + io_uring), destroy |
 | `tiered_mapper.c` | Logical ↔ Physical offset mapping (prefix sum + linear scan) |
 | `tiered_io_uring.c` | io_uring wrapper (SQE/CQE, submit, wait) |
@@ -231,6 +255,11 @@ TieredVol/
 | `tiered_partition.c` | Weight calculation, capacity segmentation, segment building |
 | `tiered_metadata.c` | Metadata save/load (static weights only) |
 | `tiered_io.c` | CLI I/O tool: info/read/write/bench/bench-all/path |
+| `io_bench.c` | Benchmark helpers: disk open/close/discard, warmup, single/all bench runs |
+| `warmup.c` | SLC cache warm-up: sequential write pass before benchmark |
+| `exec_helper.c` | External command execution (popen-based) for dmsetup/lvm |
+| `setup_discover.c` | Disk discovery: list, filter, detect partitions |
+| `setup_bench.c` | Setup benchmark: parallel speed testing of selected disks |
 
 ---
 
