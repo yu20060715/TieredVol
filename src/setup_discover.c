@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "tiered_common.h"
+#include "tiered_types.h"
 #include "setup_discover.h"
 
 long long sysfs_size_gb(const char *disk) {

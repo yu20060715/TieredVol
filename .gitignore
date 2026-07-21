@@ -1,7 +1,17 @@
 # Compiled binaries
 tiered_setup
 tiered_io
+tiered_benchmark
 test_common
+
+# Test binaries
+test_mapper
+test_partition
+test_metadata
+test_sched
+test_integrity
+test_tui
+tiered_ui
 
 # Object files
 *.o
@@ -17,10 +27,3 @@ test_common
 # OS
 .DS_Store
 Thumbs.db
-
-# Test binaries
-test_mapper
-test_partition
-test_metadata
-test_sched
-test_integrity

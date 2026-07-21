@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include "tiered_types.h"
 #include "exec_helper.h"
 
 int tv_exec_run(const char *path, char *const argv[]) {

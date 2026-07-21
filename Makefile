@@ -6,7 +6,7 @@ SCHED_OBJS=src/tiered_sched.o src/tiered_partition.o src/tiered_mapper.o \
            src/tiered_io_uring.o src/tiered_metadata.o \
            src/tiered_benchmark.o src/warmup.o
 
-SETUP_OBJS=src/setup_discover.o src/setup_bench.o src/cmd_create.o src/cmd_remove.o
+SETUP_OBJS=src/exec_helper.o src/setup_discover.o src/setup_bench.o src/cmd_create.o src/cmd_remove.o
 IO_OBJS=src/io_bench.o
 
 all: tiered_setup tiered_io
@@ -36,6 +36,9 @@ src/tiered_benchmark.o: src/tiered_benchmark.c src/tiered_types.h src/warmup.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 src/warmup.o: src/warmup.c src/warmup.h src/tiered_types.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/exec_helper.o: src/exec_helper.c src/exec_helper.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 src/setup_discover.o: src/setup_discover.c src/setup_discover.h

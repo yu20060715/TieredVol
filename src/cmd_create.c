@@ -65,6 +65,7 @@ int cmd_create(int argc, char *argv[]) {
     int stripe_size_kb = DEFAULT_STRIPE_SIZE_KB;
     int user_stripesize = 0;
     int use_scheduler = 0;
+    int auto_confirm = 0;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
@@ -72,6 +73,7 @@ int cmd_create(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--fs") == 0 && i + 1 < argc) fs = argv[++i];
         else if (strcmp(argv[i], "--mount") == 0 && i + 1 < argc) mount_point = argv[++i];
         else if (strcmp(argv[i], "--scheduler") == 0) use_scheduler = 1;
+        else if (strcmp(argv[i], "--yes") == 0) auto_confirm = 1;
         else if (strcmp(argv[i], "--stripesize") == 0 && i + 1 < argc) {
             char *endptr;
             long val = strtol(argv[++i], &endptr, 10);
@@ -268,12 +270,14 @@ int cmd_create(int argc, char *argv[]) {
                valid[i].disk, valid[i].carve_gb, valid[i].size_gb);
     }
     printf("\n  Please back up your data before proceeding.\n");
-    printf("  Type YES to confirm (anything else to abort): ");
-    fflush(stdout);
-    char confirm[16] = "";
-    if (!fgets(confirm, sizeof(confirm), stdin) || strncmp(confirm, "YES", 3) != 0) {
-        fprintf(stderr, "\nAborted by user.\n");
-        return TV_ERR;
+    if (!auto_confirm) {
+        printf("  Type YES to confirm (anything else to abort): ");
+        fflush(stdout);
+        char confirm[16] = "";
+        if (!fgets(confirm, sizeof(confirm), stdin) || strncmp(confirm, "YES", 3) != 0) {
+            fprintf(stderr, "\nAborted by user.\n");
+            return TV_ERR;
+        }
     }
     printf("\n");
 
