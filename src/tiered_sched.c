@@ -213,6 +213,14 @@ int tv_flush(TV_SCHED *sched) {
         struct __kernel_timespec ts = { .tv_sec = TV_CQE_TIMEOUT_SEC, .tv_nsec = 0 };
         int ret = io_uring_wait_cqe_timeout(&sched->ring, &cqe, &ts);
         if (ret == -ETIME) {
+            int inflight_before = sched->inflight;
+            reap_completed(sched);
+            if (sched->inflight == 0) break;
+            if (sched->inflight == inflight_before) {
+                fprintf(stderr, "tv_flush: CQE stuck (%d in-flight)\n",
+                        sched->inflight);
+                return -1;
+            }
             continue;
         }
         if (ret == -EINTR) {
