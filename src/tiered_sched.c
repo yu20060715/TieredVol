@@ -256,7 +256,8 @@ int tv_flush(TV_SCHED *sched) {
                     reap_completed(sched);
                     if (sched->inflight == 0) break;
                     if (sched->inflight == inflight_before) {
-                        fprintf(stderr, "tv_flush: %d CQEs stuck (lost), recovering\n",
+                        fprintf(stderr, "tv_flush: %d CQEs stuck (lost), recovering "
+                                "(CQEs lost, data already on disk)\n",
                                 sched->inflight);
                         struct io_uring_cqe *tmp;
                         while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
@@ -309,9 +310,13 @@ process_cqe:
 
 int tv_sched_seek(TV_SCHED *sched, uint64_t offset) {
     if (!sched) return -1;
+    if (offset % sched->stripe_size != 0) {
+        fprintf(stderr, "tv_sched_seek: offset %lu is not stripe-aligned (%u)\n",
+                (unsigned long)offset, sched->stripe_size);
+        return -1;
+    }
     if (tv_flush(sched) < 0) return -1;
-    uint64_t aligned = (offset / sched->stripe_size) * sched->stripe_size;
-    sched->sbuf_logical = aligned;
+    sched->sbuf_logical = offset;
     sched->sbuf_used = 0;
     return 0;
 }

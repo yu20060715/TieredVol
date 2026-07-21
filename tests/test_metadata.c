@@ -49,6 +49,11 @@ static int meta_equal(const TV_METADATA *a, const TV_METADATA *b) {
         if (a->segments[i].logical_begin != b->segments[i].logical_begin) return 0;
         if (a->segments[i].logical_end != b->segments[i].logical_end) return 0;
         if (a->segments[i].disk_count != b->segments[i].disk_count) return 0;
+        if (a->segments[i].stripe_size != b->segments[i].stripe_size) return 0;
+        for (uint32_t j = 0; j < a->segments[i].disk_count; j++) {
+            if (a->segments[i].weight[j] != b->segments[i].weight[j]) return 0;
+            if (a->segments[i].disk_index[j] != b->segments[i].disk_index[j]) return 0;
+        }
     }
     return 1;
 }

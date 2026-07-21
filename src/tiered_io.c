@@ -122,8 +122,8 @@ static int cmd_read(TV_SCHED *sched, uint64_t offset, uint64_t len) {
 }
 
 static int cmd_write(TV_SCHED *sched, uint64_t offset, uint64_t len) {
-    uint8_t *buf = malloc((size_t)len);
-    if (!buf) {
+    uint8_t *buf = NULL;
+    if (posix_memalign((void **)&buf, 4096, (size_t)len) != 0) {
         fprintf(stderr, "Error: cannot allocate %lu bytes\n", (unsigned long)len);
         return -1;
     }

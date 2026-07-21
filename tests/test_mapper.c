@@ -79,8 +79,9 @@ static void test_map_single_seg_mid(void) {
     printf("\n[TEST] tv_map_logical single segment, mid offset\n");
     TV_METADATA m = single_seg_meta();
     uint64_t stripe = m.segments[0].stripe_size;
+    /* offset = 2 stripes + 1 byte → offset_in_stripe = 1 → disk 0 (weight[0]=3) */
     TV_MAP map = tv_map_logical(stripe * 2 + 1, &m);
-    check(map.disk == 0 || map.disk == 1, "maps to a valid disk");
+    check(map.disk == 0, "offset 1 byte into stripe → disk 0 (weight[0]=3)");
     check(map.offset > 0, "non-zero offset");
     check(map.length > 0, "non-zero length");
 }
@@ -89,8 +90,19 @@ static void test_map_single_seg_boundary(void) {
     printf("\n[TEST] tv_map_logical single segment, near end\n");
     TV_METADATA m = single_seg_meta();
     uint64_t end = m.segments[0].logical_end;
+    /* end-1 is in the last stripe → determine expected disk from weight bounds */
+    uint64_t seg_len = end - m.segments[0].logical_begin;
+    uint64_t stripe_size = m.segments[0].stripe_size;
+    uint64_t last_stripe_start = (seg_len / stripe_size) * stripe_size;
+    uint64_t offset_in_stripe = seg_len - 1 - last_stripe_start;
+    int expected_disk = 0;
+    uint64_t bound = 0;
+    for (uint32_t i = 0; i < m.segments[0].disk_count; i++) {
+        bound += (uint64_t)m.segments[0].weight[i] * m.chunk_size;
+        if (offset_in_stripe < bound) { expected_disk = (int)i; break; }
+    }
     TV_MAP map = tv_map_logical(end - 1, &m);
-    check(map.disk >= 0, "valid disk index");
+    check(map.disk == expected_disk, "disk matches weight boundary calculation");
     check(map.length > 0, "non-zero length");
 }
 
@@ -105,8 +117,9 @@ static void test_map_dual_seg_second(void) {
     printf("\n[TEST] tv_map_logical dual segment, second segment\n");
     TV_METADATA m = dual_seg_meta();
     uint64_t boundary = m.segments[0].logical_end;
+    /* boundary = start of segment 1 → offset_in_seg_1 = 0 → disk = seg[1].disk_index[0] = 1 */
     TV_MAP map = tv_map_logical(boundary, &m);
-    check(map.disk >= 0, "valid disk index in segment 1");
+    check(map.disk == 1, "segment 1 offset 0 → disk_index[0]=1 (sda)");
 }
 
 int main(void) {
