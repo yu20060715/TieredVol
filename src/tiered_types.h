@@ -15,6 +15,9 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #define TV_CQE_TIMEOUT_SEC      5
 #define TV_CQE_RETRY_SEC       30
 
+#define TV_ESTIMATED_EFFICIENCY 0.94
+#define DEFAULT_STRIPE_SIZE_KB  512
+
 typedef struct {
     int      id;
     int      fd;

@@ -80,7 +80,7 @@ static int cmd_create(int argc, char *argv[]) {
     char *disk_spec = NULL;
     char *fs = "ext4";
     char *mount_point = NULL;
-    int stripe_size_kb = 512;
+    int stripe_size_kb = DEFAULT_STRIPE_SIZE_KB;
     int user_stripesize = 0;
     int use_scheduler = 0;
 
@@ -273,7 +273,7 @@ static int cmd_create(int argc, char *argv[]) {
                ratio);
     }
     printf("  Total theoretical speed: %.0f MB/s\n", total_speed);
-    printf("  Estimated actual: ~%.0f MB/s\n", total_speed * 0.94);
+    printf("  Estimated actual: ~%.0f MB/s\n", total_speed * TV_ESTIMATED_EFFICIENCY);
     printf("\n");
 
     printf("  ================================================================\n");

@@ -27,6 +27,10 @@ static void bench_signal_handler(int sig) {
     bench_interrupted = 1;
 }
 
+#define BENCH_FILE_ITERATIONS   5
+#define BENCH_FILE_SIZE          (512LL * 1024 * 1024)
+#define BENCH_FILE_BLOCK         (1024 * 1024)
+
 typedef struct { int ret; double w; double r; } bench_result_t;
 
 static int bench_disk(const char *disk, double *write_spd, double *read_spd, int warmup) {
@@ -97,9 +101,9 @@ static int bench_disk(const char *disk, double *write_spd, double *read_spd, int
     }
 
     {
-        int iterations = 5;
-        long long file_size = 512LL * 1024 * 1024;
-        int block_size = 1024 * 1024;
+        int iterations = BENCH_FILE_ITERATIONS;
+        long long file_size = BENCH_FILE_SIZE;
+        int block_size = BENCH_FILE_BLOCK;
         int o_direct_warned = 0;
 
         ws = calloc(iterations, sizeof(double));
@@ -412,7 +416,7 @@ int cmd_bench(int argc, char *argv[]) {
         printf("%-28s %-12s %-8s %-8s %-8s\n", id, info[i].tran, size_str, w, r);
     }
     printf("\nTotal theoretical write speed: %.0f MB/s\n", total_w);
-    printf("Estimated actual: ~%.0f MB/s (92-97%% efficiency)\n", total_w * 0.94);
+    printf("Estimated actual: ~%.0f MB/s (92-97%% efficiency)\n", total_w * TV_ESTIMATED_EFFICIENCY);
 
     return 0;
 }
