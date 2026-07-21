@@ -161,7 +161,7 @@ static int cmd_create(int argc, char *argv[]) {
 
     printf("=== TieredVol: Creating '%s' ===\n", name);
 
-    disk_info_t dinfo[MAX_DISKS];
+    disk_t dinfo[MAX_DISKS];
     int ninfo = load_all_disk_info(dinfo, MAX_DISKS);
 
     int valid_disks = 0;
@@ -174,7 +174,7 @@ static int cmd_create(int argc, char *argv[]) {
         disks_arr[i].is_root = 0;
         disks_arr[i].is_mounted = 0;
         for (int j = 0; j < ninfo; j++) {
-            if (strcmp(disks_arr[i].disk, dinfo[j].name) == 0) {
+            if (strcmp(disks_arr[i].disk, dinfo[j].disk) == 0) {
                 strncpy(disks_arr[i].tran, dinfo[j].tran, sizeof(disks_arr[i].tran) - 1);
                 disks_arr[i].is_root = dinfo[j].is_root;
                 disks_arr[i].is_mounted = dinfo[j].is_mounted;

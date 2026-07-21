@@ -56,11 +56,15 @@ test_partition: tests/test_partition.c src/tiered_sched.h $(SCHED_OBJS)
 test_metadata: tests/test_metadata.c src/tiered_sched.h $(SCHED_OBJS)
 	$(CC) $(CFLAGS) -o $@ $< $(SCHED_OBJS) -luring
 
-test: test_common test_mapper test_partition test_metadata
+test_sched: tests/test_sched.c src/tiered_sched.h $(SCHED_OBJS)
+	$(CC) $(CFLAGS) -o $@ $< $(SCHED_OBJS) -luring
+
+test: test_common test_mapper test_partition test_metadata test_sched
 	@echo "=== test_common ===" && ./test_common && \
 	echo "=== test_mapper ===" && ./test_mapper && \
 	echo "=== test_partition ===" && ./test_partition && \
-	echo "=== test_metadata ===" && ./test_metadata
+	echo "=== test_metadata ===" && ./test_metadata && \
+	echo "=== test_sched ===" && ./test_sched
 
 install: all
 	install -m 755 tiered_setup $(DESTDIR)$(PREFIX)/bin/tiered_setup
@@ -87,7 +91,7 @@ uninstall:
 	rm -f $(DESTDIR)/etc/systemd/system/tieredvol-restore.service
 
 clean:
-	rm -f tiered_setup tiered_io test_common test_mapper test_partition test_metadata
+	rm -f tiered_setup tiered_io test_common test_mapper test_partition test_metadata test_sched
 	rm -f src/*.o
 
 .PHONY: all install uninstall clean test

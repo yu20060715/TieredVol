@@ -473,11 +473,11 @@ int cmd_bench(int argc, char *argv[]) {
         info[i].size_gb = sysfs_size_gb(disks[i]);
     }
 
-    disk_info_t dinfo[MAX_DISKS];
+    disk_t dinfo[MAX_DISKS];
     int ninfo = load_all_disk_info(dinfo, MAX_DISKS);
     for (int i = 0; i < nd; i++) {
         for (int j = 0; j < ninfo; j++) {
-            if (strcmp(disks[i], dinfo[j].name) == 0) {
+            if (strcmp(disks[i], dinfo[j].disk) == 0) {
                 strncpy(info[i].tran, dinfo[j].tran, sizeof(info[i].tran) - 1);
                 break;
             }

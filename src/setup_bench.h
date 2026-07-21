@@ -1,21 +1,10 @@
 #ifndef SETUP_BENCH_H
 #define SETUP_BENCH_H
 
-#include <stdio.h>
+#include "setup_discover.h"
+
 #include <stddef.h>
 #include <signal.h>
-
-typedef struct {
-    char disk[32];
-    char model[128];
-    char tran[16];
-    long long size_gb;
-    double speed_write;
-    double speed_read;
-    long long carve_gb;
-    int is_root;
-    int is_mounted;
-} disk_t;
 
 typedef void (*bench_interrupt_fn)(void *ctx);
 

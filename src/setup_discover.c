@@ -39,7 +39,7 @@ static int is_virtual_disk(const char *name) {
     return strncmp(name, "loop", 4) == 0 || strncmp(name, "ram", 3) == 0 || strncmp(name, "dm-", 3) == 0;
 }
 
-int load_all_disk_info(disk_info_t *out, int max) {
+int load_all_disk_info(disk_t *out, int max) {
     int n = 0;
     FILE *p = popen("lsblk -d -o NAME,TRAN,MOUNTPOINT 2>/dev/null", "r");
     if (p) {
@@ -52,8 +52,8 @@ int load_all_disk_info(disk_info_t *out, int max) {
             char *mnt = strtok(NULL, " ");
             if (!name) continue;
             if (is_virtual_disk(name)) continue;
-            strncpy(out[n].name, name, sizeof(out[n].name) - 1);
-            out[n].name[sizeof(out[n].name) - 1] = 0;
+            strncpy(out[n].disk, name, sizeof(out[n].disk) - 1);
+            out[n].disk[sizeof(out[n].disk) - 1] = 0;
             strncpy(out[n].tran, tran ? tran : "unknown", sizeof(out[n].tran) - 1);
             out[n].tran[sizeof(out[n].tran) - 1] = 0;
             out[n].is_root = 0;
@@ -89,7 +89,7 @@ void find_mount_for_disk(const char *disk, char *mp, size_t mp_size) {
 }
 
 int cmd_list(void) {
-    disk_info_t info[MAX_DISKS];
+    disk_t info[MAX_DISKS];
     int ninfo = load_all_disk_info(info, MAX_DISKS);
 
     printf("%-12s %-8s %-28s %-12s %-8s %-8s\n",
@@ -99,15 +99,15 @@ int cmd_list(void) {
 
     for (int i = 0; i < ninfo; i++) {
         char model[128];
-        sysfs_model(info[i].name, model, sizeof(model));
-        long long gb = sysfs_size_gb(info[i].name);
+        sysfs_model(info[i].disk, model, sizeof(model));
+        long long gb = sysfs_size_gb(info[i].disk);
 
         char size_str[32];
         if (gb >= 1024) snprintf(size_str, sizeof(size_str), "%.1fT", gb / 1024.0);
         else snprintf(size_str, sizeof(size_str), "%lldG", gb);
 
         printf("%-12s %-8s %-28s %-12s %-8s %-8s%s%s\n",
-               info[i].name, "disk", model, info[i].tran, size_str, "-",
+               info[i].disk, "disk", model, info[i].tran, size_str, "-",
                info[i].is_root ? " [ROOT]" : "",
                info[i].is_mounted ? " [MOUNTED]" : "");
     }
