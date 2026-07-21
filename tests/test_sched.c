@@ -176,8 +176,9 @@ static void test_double_free(void) {
     TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
     if (sched) {
         tv_sched_destroy(sched);
+        sched = NULL;
         tv_sched_destroy(sched);
-        check(1, "double_free_no_crash");
+        check(1, "destroy_and_null_no_crash");
     } else {
         check(1, "double_free_skip");
     }
@@ -202,9 +203,10 @@ static void test_write_after_destroy(void) {
     TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
     if (sched) {
         tv_sched_destroy(sched);
+        sched = NULL;
         uint8_t buf[4] = {0};
         int ret = tv_write(sched, buf, 4);
-        check(ret != 0 || sched == NULL, "write_after_destroy_returns_error");
+        check(ret != 0, "write_after_destroy_returns_error");
     } else {
         check(1, "write_after_destroy_skip");
     }
