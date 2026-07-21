@@ -84,7 +84,7 @@ test-full:
 	-sudo losetup -d /dev/loop0
 	sudo dd if=/dev/zero of=/tmp/tv_test.img bs=1M count=100
 	DEV=$$(sudo losetup -f --show /tmp/tv_test.img); \
-	./test_integrity $$DEV; \
+	sudo ./test_integrity $$DEV; \
 	sudo losetup -d $$DEV
 	sudo rm -f /tmp/tv_test.img
 
