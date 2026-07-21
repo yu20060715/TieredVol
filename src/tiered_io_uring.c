@@ -3,7 +3,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <time.h>
-#include "tiered_sched.h"
+#include "tiered_io_uring.h"
+#include "tiered_types.h"
 
 int tv_uring_init(struct io_uring *ring, int queue_depth) {
     int ret = io_uring_queue_init(queue_depth, ring, 0);

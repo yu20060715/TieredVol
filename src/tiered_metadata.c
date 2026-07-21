@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "tiered_sched.h"
+#include "tiered_types.h"
 
 int tv_metadata_save(TV_METADATA *meta, const char *path) {
     if (!meta || !path) return -1;

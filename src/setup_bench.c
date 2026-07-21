@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <linux/fs.h>
 #include "tiered_common.h"
-#include "tiered_sched.h"
+#include "tiered_types.h"
 #include "setup_discover.h"
 #include "setup_bench.h"
 

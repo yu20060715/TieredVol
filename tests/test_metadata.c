@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include "../src/tiered_sched.h"
+#include "../src/tiered_types.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;

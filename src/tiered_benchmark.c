@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
-#include "tiered_sched.h"
+#include "tiered_types.h"
 
 #define BENCH_SIZE      (32 * 1024 * 1024)
 #define BENCH_RUNS      3

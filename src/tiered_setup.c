@@ -9,7 +9,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include "tiered_common.h"
-#include "tiered_sched.h"
+#include "tiered_types.h"
 #include "version.h"
 #include "setup_discover.h"
 #include "setup_bench.h"
