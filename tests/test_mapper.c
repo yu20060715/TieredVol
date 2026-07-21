@@ -91,10 +91,9 @@ static void test_map_single_seg_boundary(void) {
     TV_METADATA m = single_seg_meta();
     uint64_t end = m.segments[0].logical_end;
     /* end-1 is in the last stripe → determine expected disk from weight bounds */
-    uint64_t seg_len = end - m.segments[0].logical_begin;
+    uint64_t offset_in_seg = (end - 1) - m.segments[0].logical_begin;
     uint64_t stripe_size = m.segments[0].stripe_size;
-    uint64_t last_stripe_start = (seg_len / stripe_size) * stripe_size;
-    uint64_t offset_in_stripe = seg_len - 1 - last_stripe_start;
+    uint64_t offset_in_stripe = offset_in_seg % stripe_size;
     int expected_disk = 0;
     uint64_t bound = 0;
     for (uint32_t i = 0; i < m.segments[0].disk_count; i++) {
