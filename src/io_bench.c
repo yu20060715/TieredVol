@@ -266,7 +266,16 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
         written += chunk;
     }
     if (tv_flush(sched) < 0) {
-        fprintf(stderr, "Warning: flush failed during read prep\n");
+        fprintf(stderr, "Warning: flush failed during read prep, cleaning ring\n");
+        /* Drain any orphaned CQEs from the ring */
+        struct io_uring_cqe *tmp;
+        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
+            io_uring_cqe_seen(&sched->ring, tmp);
+        for (int i = 0; i < TV_BUF_COUNT; i++) {
+            sched->sbuf[i].in_flight = 0;
+            sched->sbuf[i].cqes_pending = 0;
+        }
+        sched->inflight = 0;
     }
     for (int i = 0; i < sched->ndisks; i++) {
         if (sched->disks[i].fd >= 0) fsync(sched->disks[i].fd);

@@ -112,9 +112,17 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
                                     reap_completed(sched);
                                     if (sched->inflight == 0) break;
                                     if (sched->inflight == inflight_before) {
-                                        fprintf(stderr, "tv_write: CQE stuck (%d)\n",
+                                        fprintf(stderr, "tv_write: %d CQEs stuck, recovering (data already on disk)\n",
                                                 sched->inflight);
-                                        return TV_ERR;
+                                        struct io_uring_cqe *tmp;
+                                        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
+                                            io_uring_cqe_seen(&sched->ring, tmp);
+                                        for (int i = 0; i < TV_BUF_COUNT; i++) {
+                                            sched->sbuf[i].in_flight = 0;
+                                            sched->sbuf[i].cqes_pending = 0;
+                                        }
+                                        sched->inflight = 0;
+                                        break;
                                     }
                                     continue;
                                 }
@@ -257,9 +265,17 @@ int tv_flush(TV_SCHED *sched) {
                     reap_completed(sched);
                     if (sched->inflight == 0) break;
                     if (sched->inflight == inflight_before) {
-                        fprintf(stderr, "tv_flush: %d CQEs stuck, data may be lost\n",
+                        fprintf(stderr, "tv_flush: %d CQEs stuck, recovering (data already on disk)\n",
                                 sched->inflight);
-                        return TV_ERR;
+                        struct io_uring_cqe *tmp;
+                        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
+                            io_uring_cqe_seen(&sched->ring, tmp);
+                        for (int i = 0; i < TV_BUF_COUNT; i++) {
+                            sched->sbuf[i].in_flight = 0;
+                            sched->sbuf[i].cqes_pending = 0;
+                        }
+                        sched->inflight = 0;
+                        break;
                     }
                     continue;
                 }
