@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall -Wextra -Wpedantic -std=gnu11 -O2
+CFLAGS=-D_GNU_SOURCE -Wall -Wextra -Wpedantic -std=gnu11 -O2
 PREFIX=/usr/local
 
 SCHED_OBJS=src/tiered_sched.o src/tiered_partition.o src/tiered_mapper.o \
@@ -11,8 +11,8 @@ IO_OBJS=src/io_bench.o
 
 all: tiered_setup tiered_io
 
-tiered_setup: src/tiered_setup.c src/tiered_common.h src/tiered_types.h src/version.h src/setup_discover.h src/setup_bench.h src/exec_helper.h src/cmd_create.h src/cmd_remove.h $(SCHED_OBJS) $(SETUP_OBJS)
-	$(CC) $(CFLAGS) -o $@ src/tiered_setup.c $(SCHED_OBJS) $(SETUP_OBJS) -lm -luring
+tiered_setup: src/main.c src/tiered_common.h src/tiered_types.h src/version.h src/setup_discover.h src/setup_bench.h src/exec_helper.h src/cmd_create.h src/cmd_remove.h $(SCHED_OBJS) $(SETUP_OBJS)
+	$(CC) $(CFLAGS) -o $@ src/main.c $(SCHED_OBJS) $(SETUP_OBJS) -lm -luring
 
 tiered_io: src/tiered_io.c src/tiered_sched.h src/io_bench.h $(SCHED_OBJS) $(IO_OBJS)
 	$(CC) $(CFLAGS) -o $@ src/tiered_io.c $(SCHED_OBJS) $(IO_OBJS) -luring

@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +79,7 @@ int cmd_remove(int argc, char *argv[]) {
             int removed = 0;
             for (int retry = 0; retry < 3; retry++) {
                 char *const dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
-                if (tv_exec_sudo(dm_argv) == 0) {
+                if (tv_exec_sudo(dm_argv, 0) == 0) {
                     removed = 1;
                     break;
                 }
@@ -99,17 +98,17 @@ int cmd_remove(int argc, char *argv[]) {
         printf("Removing scheduler metadata...\n");
         {
             char *rm_argv[] = {"sudo", "rm", "-f", sched_path, NULL};
-            (void)tv_exec_sudo(rm_argv);
+            (void)tv_exec_sudo(rm_argv, 0);
         }
         {
             char conf_path_cleanup[256];
             snprintf(conf_path_cleanup, sizeof(conf_path_cleanup), "/etc/tieredvol/%s.conf", name);
             char *rm_argv[] = {"sudo", "rm", "-f", conf_path_cleanup, NULL};
-            (void)tv_exec_sudo(rm_argv);
+            (void)tv_exec_sudo(rm_argv, 0);
         }
         {
             char *rmdir_argv[] = {"sudo", "rmdir", "/etc/tieredvol", NULL};
-            (void)tv_exec_sudo(rmdir_argv);
+            (void)tv_exec_sudo(rmdir_argv, 0);
         }
 
         printf("\n=== Remove Complete ===\n");
@@ -154,7 +153,7 @@ int cmd_remove(int argc, char *argv[]) {
         find_mount_for_disk(target_dev, mp, sizeof(mp));
         if (mp[0]) {
             char *umount_argv[] = {"sudo", "umount", mp, NULL};
-            int umount_ret = tv_exec_sudo(umount_argv);
+            int umount_ret = tv_exec_sudo(umount_argv, 0);
             if (umount_ret != 0) {
                 fprintf(stderr, "Warning: umount %s returned %d\n", mp, umount_ret);
             } else {
@@ -172,7 +171,7 @@ int cmd_remove(int argc, char *argv[]) {
             find_mount_for_disk(lv_path, mp, sizeof(mp));
             if (mp[0]) {
                 char *umount_argv[] = {"sudo", "umount", mp, NULL};
-                int umount_ret = tv_exec_sudo(umount_argv);
+                int umount_ret = tv_exec_sudo(umount_argv, 0);
                 if (umount_ret != 0) {
                     fprintf(stderr, "Warning: umount %s returned %d\n", mp, umount_ret);
                 } else {
@@ -208,16 +207,16 @@ int cmd_remove(int argc, char *argv[]) {
         }
         {
             char *const dm_argv[] = {"sudo", "dmsetup", "remove", targets[i], NULL};
-            (void)tv_exec_sudo(dm_argv);
+            (void)tv_exec_sudo(dm_argv, 0);
         }
     }
 
     printf("Removing config...\n");
     {
         char *rm_argv[] = {"sudo", "rm", "-f", conf_path, NULL};
-        (void)tv_exec_sudo(rm_argv);
+        (void)tv_exec_sudo(rm_argv, 0);
         char *rmdir_argv[] = {"sudo", "rmdir", "/etc/tieredvol", NULL};
-        (void)tv_exec_sudo(rmdir_argv);
+        (void)tv_exec_sudo(rmdir_argv, 0);
     }
 
     printf("\n=== Remove Complete ===\n");

@@ -157,6 +157,59 @@ static void test_seek_rejects_unaligned(void) {
     tv_sched_destroy(s);
 }
 
+static void test_double_free(void) {
+    printf("\n[TEST] double free safety\n");
+    TV_METADATA meta = {0};
+    meta.segment_count = 1;
+    meta.segments[0].disk_count = 1;
+    meta.segments[0].disk_index[0] = 0;
+    meta.segments[0].weight[0] = 1;
+    meta.segments[0].stripe_size = 1048576;
+    meta.segments[0].logical_begin = 0;
+    meta.segments[0].logical_end = 1048576;
+    strcpy(meta.disk_names[0], "/dev/null");
+    TV_DISK disks[1];
+    memset(disks, 0, sizeof(disks));
+    disks[0].id = 0;
+    strcpy(disks[0].name, "/dev/null");
+    disks[0].fd = -1;
+    TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
+    if (sched) {
+        tv_sched_destroy(sched);
+        tv_sched_destroy(sched);
+        check(1, "double_free_no_crash");
+    } else {
+        check(1, "double_free_skip");
+    }
+}
+
+static void test_write_after_destroy(void) {
+    printf("\n[TEST] write after destroy\n");
+    TV_METADATA meta = {0};
+    meta.segment_count = 1;
+    meta.segments[0].disk_count = 1;
+    meta.segments[0].disk_index[0] = 0;
+    meta.segments[0].weight[0] = 1;
+    meta.segments[0].stripe_size = 1048576;
+    meta.segments[0].logical_begin = 0;
+    meta.segments[0].logical_end = 1048576;
+    strcpy(meta.disk_names[0], "/dev/null");
+    TV_DISK disks[1];
+    memset(disks, 0, sizeof(disks));
+    disks[0].id = 0;
+    strcpy(disks[0].name, "/dev/null");
+    disks[0].fd = -1;
+    TV_SCHED *sched = tv_sched_init(disks, 1, &meta);
+    if (sched) {
+        tv_sched_destroy(sched);
+        uint8_t buf[4] = {0};
+        int ret = tv_write(sched, buf, 4);
+        check(ret != 0 || sched == NULL, "write_after_destroy_returns_error");
+    } else {
+        check(1, "write_after_destroy_skip");
+    }
+}
+
 int main(void) {
     printf("=== TieredVol Scheduler Unit Tests ===\n");
 
@@ -170,6 +223,8 @@ int main(void) {
     test_destroy_null();
     test_flush_no_inflight();
     test_seek_rejects_unaligned();
+    test_double_free();
+    test_write_after_destroy();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,7 +51,7 @@ void cleanup_create(const char *name, disk_t *valid, int valid_disks) {
         }
         {
             char *const dm_argv[] = {"sudo", "dmsetup", "remove", target, NULL};
-            (void)tv_exec_sudo(dm_argv);
+            (void)tv_exec_sudo(dm_argv, 0);
         }
     }
     fprintf(stderr, "  Rollback complete.\n");
@@ -284,7 +283,7 @@ int cmd_create(int argc, char *argv[]) {
         find_mount_for_disk(valid[i].disk, mp, sizeof(mp));
         if (mp[0]) {
             char *umount_argv[] = {"sudo", "umount", mp, NULL};
-            (void)tv_exec_sudo(umount_argv);
+            (void)tv_exec_sudo(umount_argv, 0);
         }
         char target[64];
         make_target(target, sizeof(target), valid[i].disk);
@@ -510,9 +509,9 @@ int cmd_create(int argc, char *argv[]) {
     if (mount_point && strcmp(fs, "none") != 0) {
         printf("Step 7: Mounting...\n");
         char *mkdir_argv[] = {"sudo", "mkdir", "-p", mount_point, NULL};
-        (void)tv_exec_sudo(mkdir_argv);
+        (void)tv_exec_sudo(mkdir_argv, 0);
         char *mount_argv[] = {"sudo", "mount", lv_path, mount_point, NULL};
-        if (tv_exec_sudo(mount_argv) != 0) {
+        if (tv_exec_sudo(mount_argv, 0) != 0) {
             fprintf(stderr, "Error: mount failed\n");
             cleanup_create(name, valid, valid_disks);
             return TV_ERR;
@@ -538,11 +537,11 @@ int cmd_create(int argc, char *argv[]) {
                 }
                 fclose(cf);
                 char *mkdir_argv[] = {"sudo", "mkdir", "-p", "/etc/tieredvol", NULL};
-                (void)tv_exec_sudo(mkdir_argv);
+                (void)tv_exec_sudo(mkdir_argv, 0);
                 char dest[512];
                 snprintf(dest, sizeof(dest), "/etc/tieredvol/%s.conf", name);
                 char *mv_argv[] = {"sudo", "mv", "-f", conf_path, dest, NULL};
-                int mv_ret = tv_exec_sudo(mv_argv);
+                int mv_ret = tv_exec_sudo(mv_argv, 0);
                 if (mv_ret != 0) {
                     fprintf(stderr, "Warning: failed to save config\n");
                     unlink(conf_path);

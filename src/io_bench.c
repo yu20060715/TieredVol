@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -414,18 +413,7 @@ int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, 
             warmup_size = 4ULL * 1024 * 1024 * 1024;
         fprintf(stderr, "Warming up SLC cache (%luMB)...\n",
                 (unsigned long)(warmup_size / (1024 * 1024)));
-        uint64_t warmup_written = 0;
-        while (warmup_written < warmup_size) {
-            if (g_shutdown_requested) break;
-            uint64_t chunk = chunk_size;
-            if (warmup_written + chunk > warmup_size) chunk = warmup_size - warmup_written;
-            ssize_t n = pwrite(fd, buf, (size_t)chunk, (off_t)warmup_written);
-            if (n < 0) {
-                fprintf(stderr, "Error: warmup pwrite failed: %s\n", strerror(errno));
-                break;
-            }
-            warmup_written += n;
-        }
+        tv_warmup_device(path, warmup_size);
         fsync(fd);
         fprintf(stderr, "Warm-up complete.\n");
     }

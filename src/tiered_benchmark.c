@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,15 +54,7 @@ int tv_benchmark(const char *disk_path, uint64_t *speed_out, int warmup) {
             warmup_offset = warmup_offset & ~((off_t)BENCH_RAW_BLOCK - 1);
         }
         fprintf(stderr, "  Warming up SLC cache (2GB)...\n");
-        uint64_t warmup_written = 0;
-        while (warmup_written < (uint64_t)WARMUP_DEFAULT_BYTES) {
-            ssize_t n = pwrite(fd, buf, BENCH_RAW_SIZE, warmup_offset + (off_t)warmup_written);
-            if (n < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            warmup_written += n;
-        }
+        tv_warmup_device(disk_path, (uint64_t)WARMUP_DEFAULT_BYTES);
         fsync(fd);
         fprintf(stderr, "  Warm-up complete, starting benchmark...\n");
     }
