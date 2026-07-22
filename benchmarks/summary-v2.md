@@ -17,8 +17,11 @@
 | 2disk_5gb_write | 1063.3 | 47.4 | 5 |
 | 2disk_5gb_read | 1100.5 | 37.3 | 5 |
 | 2disk_512mb_write | 1462.0 | 27.8 | 5 |
+| 2disk_512mb_read | 1106.6 | 25.4 | 5 |
 | 3disk_5gb_write | 1168.4 | 71.8 | 5 |
 | 3disk_5gb_read | 1253.1 | 19.1 | 5 |
+| 3disk_512mb_write | 1238.8 | 66.9 | 5 |
+| 3disk_512mb_read | 1255.4 | 87.4 | 5 |
 
 ## LVM Striped — Same Disk Configuration (NVMe+SATA)
 
