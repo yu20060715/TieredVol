@@ -413,7 +413,7 @@ int cmd_bench_path(const char *path, uint64_t size, int warmup, int use_direct, 
     uint64_t chunk_size = TV_CHUNK_SIZE;
 
     uint8_t *buf = NULL;
-    if (posix_memalign((void **)&buf, 512, (size_t)chunk_size) != 0) {
+    if (posix_memalign((void **)&buf, TV_ALLOC_ALIGNMENT, (size_t)chunk_size) != 0) {
         fprintf(stderr, "Error: cannot allocate buffer\n");
         close(fd);
         return TV_ERR;

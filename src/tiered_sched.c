@@ -259,6 +259,11 @@ static int flush_submit_io(TV_SCHED *sched, uint64_t logical, uint8_t *data, uin
         submitted++;
     }
 
+    if (submitted == 0 && data_len > 0) {
+        fprintf(stderr, "tv_flush: all weights=0, data would be lost\n");
+        return TV_ERR;
+    }
+
     if (tv_uring_submit(&sched->ring) < 0) {
         fprintf(stderr, "tv_flush: submit failed\n");
         return TV_ERR;
@@ -276,12 +281,19 @@ int tv_flush(TV_SCHED *sched) {
         TV_STRIPE_BUF *cur = &sched->sbuf[head];
         int nsub = flush_submit_io(sched, sched->sbuf_logical, cur->data, sched->sbuf_used, head);
         if (nsub < 0) return TV_ERR;
-        cur->in_flight = 1;
-        cur->cqes_pending = nsub;
-        sched->inflight++;
-        sched->sbuf_head = (sched->sbuf_head + 1) % TV_BUF_COUNT;
-        sched->sbuf_logical += sched->stripe_size;
-        sched->sbuf_used = 0;
+        if (nsub == 0) {
+            /* No I/O submitted (empty segment), skip this buffer */
+            sched->sbuf_head = (sched->sbuf_head + 1) % TV_BUF_COUNT;
+            sched->sbuf_logical += sched->stripe_size;
+            sched->sbuf_used = 0;
+        } else {
+            cur->in_flight = 1;
+            cur->cqes_pending = nsub;
+            sched->inflight++;
+            sched->sbuf_head = (sched->sbuf_head + 1) % TV_BUF_COUNT;
+            sched->sbuf_logical += sched->stripe_size;
+            sched->sbuf_used = 0;
+        }
     }
 
     /* Wait for ALL in-flight I/Os */
@@ -308,7 +320,11 @@ int tv_flush(TV_SCHED *sched) {
                     if (sched->inflight == inflight_before) {
                         fprintf(stderr, "tv_flush: %d CQEs stuck, recovering (data already on disk)\n",
                                 sched->inflight);
+                        io_uring_submit(&sched->ring);
+                        struct __kernel_timespec wait_ts = { .tv_sec = 1, .tv_nsec = 0 };
                         struct io_uring_cqe *tmp;
+                        if (io_uring_wait_cqe_timeout(&sched->ring, &tmp, &wait_ts) == 0 && tmp)
+                            io_uring_cqe_seen(&sched->ring, tmp);
                         while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
                             io_uring_cqe_seen(&sched->ring, tmp);
                         for (int i = 0; i < TV_BUF_COUNT; i++) {
@@ -343,8 +359,19 @@ int tv_flush(TV_SCHED *sched) {
 process_cqe:
         {
         int buf_idx = (int)(intptr_t)io_uring_cqe_get_data(cqe);
+        int res = cqe->res;
         io_uring_cqe_seen(&sched->ring, cqe);
-        if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
+        if (res < 0 && res != -ETIME) {
+            fprintf(stderr, "tv_flush: I/O error res=%d\n", res);
+            /* Still decrement inflight to avoid hang */
+            if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
+                sched->sbuf[buf_idx].cqes_pending--;
+                if (sched->sbuf[buf_idx].cqes_pending <= 0) {
+                    sched->sbuf[buf_idx].in_flight = 0;
+                    sched->inflight--;
+                }
+            }
+        } else if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
             sched->sbuf[buf_idx].cqes_pending--;
             if (sched->sbuf[buf_idx].cqes_pending <= 0) {
                 sched->sbuf[buf_idx].in_flight = 0;
@@ -375,6 +402,15 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
 
     /* Flush any pending writes first */
     if (tv_flush(sched) < 0) return TV_ERR;
+
+    /* Drain any stale read CQEs from prior failed reads */
+    {
+        struct io_uring_cqe *tmp;
+        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp) {
+            fprintf(stderr, "tv_read: discarding stale CQE res=%d\n", tmp->res);
+            io_uring_cqe_seen(&sched->ring, tmp);
+        }
+    }
 
     uint8_t *dst = (uint8_t *)buf;
     uint64_t pos = 0;

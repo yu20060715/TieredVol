@@ -30,6 +30,15 @@ Application
 - Logical ↔ Physical offset mapping
 - Parallel asynchronous dispatch using io_uring
 
+### Key Results (sustained 5 GB, fio + io_uring + iodepth=64)
+
+| Config | Write | vs LVM | Read | HW Sum Efficiency |
+|--------|-------|--------|------|-------------------|
+| 2-disk [2,1] | 1063 MB/s | 1.56× | 1101 MB/s | 76.3% |
+| 3-disk [2,1,1] | 1168 MB/s | 2.01× | 1253 MB/s | 62.7% |
+
+Hardware: i5-4570, NVMe CT1000P3PSSD8 (~967 MB/s), SATA CT500MX500SSD1 (~427 MB/s), SATA WDC WDS250G2B0A (~432 MB/s). Hardware sum: 2-disk=1394 MB/s, 3-disk=1864 MB/s. Weights generated via `round(speed/slowest)`: [2,1] / [2,1,1].
+
 ### What Is Intentionally Excluded
 
 - Filesystem implementation
