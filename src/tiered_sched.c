@@ -140,11 +140,32 @@ int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
                                     reap_completed(sched);
                                     if (sched->inflight == 0) break;
                                     if (sched->inflight == inflight_before) {
-                                        fprintf(stderr, "tv_write: %d CQEs stuck, recovering (data already on disk)\n",
+                                        fprintf(stderr, "tv_write: %d CQEs stuck, draining...\n",
                                                 sched->inflight);
-                                        struct io_uring_cqe *tmp;
-                                        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
-                                            io_uring_cqe_seen(&sched->ring, tmp);
+                                        /* Wait up to 30s for kernel to finish DMA */
+                                        int drain_wait = 0;
+                                        while (sched->inflight > 0 && drain_wait < 30) {
+                                            struct __kernel_timespec wait_ts = { .tv_sec = 1, .tv_nsec = 0 };
+                                            int r3 = io_uring_wait_cqe_timeout(&sched->ring, &cqe, &wait_ts);
+                                            if (r3 == 0 && cqe) {
+                                                int bi = (int)(intptr_t)io_uring_cqe_get_data(cqe);
+                                                io_uring_cqe_seen(&sched->ring, cqe);
+                                                if (bi >= 0 && bi < TV_BUF_COUNT && sched->sbuf[bi].in_flight) {
+                                                    sched->sbuf[bi].cqes_pending--;
+                                                    if (sched->sbuf[bi].cqes_pending <= 0) {
+                                                        sched->sbuf[bi].in_flight = 0;
+                                                        sched->inflight--;
+                                                    }
+                                                }
+                                                drain_wait = 0;
+                                            } else {
+                                                drain_wait++;
+                                            }
+                                        }
+                                        if (sched->inflight > 0)
+                                            fprintf(stderr, "tv_write: WARNING: %d CQEs still in flight after drain\n",
+                                                    sched->inflight);
+                                        /* Now safe to reset */
                                         for (int i = 0; i < TV_BUF_COUNT; i++) {
                                             sched->sbuf[i].in_flight = 0;
                                             sched->sbuf[i].cqes_pending = 0;
@@ -318,15 +339,34 @@ int tv_flush(TV_SCHED *sched) {
                     reap_completed(sched);
                     if (sched->inflight == 0) break;
                     if (sched->inflight == inflight_before) {
-                        fprintf(stderr, "tv_flush: %d CQEs stuck, recovering (data already on disk)\n",
+                        fprintf(stderr, "tv_flush: %d CQEs stuck, draining...\n",
                                 sched->inflight);
                         io_uring_submit(&sched->ring);
-                        struct __kernel_timespec wait_ts = { .tv_sec = 1, .tv_nsec = 0 };
-                        struct io_uring_cqe *tmp;
-                        if (io_uring_wait_cqe_timeout(&sched->ring, &tmp, &wait_ts) == 0 && tmp)
-                            io_uring_cqe_seen(&sched->ring, tmp);
-                        while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
-                            io_uring_cqe_seen(&sched->ring, tmp);
+                        /* Wait up to 30s for kernel to finish DMA */
+                        int drain_wait = 0;
+                        while (sched->inflight > 0 && drain_wait < 30) {
+                            struct __kernel_timespec wait_ts = { .tv_sec = 1, .tv_nsec = 0 };
+                            struct io_uring_cqe *tmp;
+                            int r3 = io_uring_wait_cqe_timeout(&sched->ring, &tmp, &wait_ts);
+                            if (r3 == 0 && tmp) {
+                                int bi = (int)(intptr_t)io_uring_cqe_get_data(tmp);
+                                io_uring_cqe_seen(&sched->ring, tmp);
+                                if (bi >= 0 && bi < TV_BUF_COUNT && sched->sbuf[bi].in_flight) {
+                                    sched->sbuf[bi].cqes_pending--;
+                                    if (sched->sbuf[bi].cqes_pending <= 0) {
+                                        sched->sbuf[bi].in_flight = 0;
+                                        sched->inflight--;
+                                    }
+                                }
+                                drain_wait = 0;
+                            } else {
+                                drain_wait++;
+                            }
+                        }
+                        if (sched->inflight > 0)
+                            fprintf(stderr, "tv_flush: WARNING: %d CQEs still in flight after drain\n",
+                                    sched->inflight);
+                        /* Now safe to reset */
                         for (int i = 0; i < TV_BUF_COUNT; i++) {
                             sched->sbuf[i].in_flight = 0;
                             sched->sbuf[i].cqes_pending = 0;
@@ -412,6 +452,16 @@ int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
         }
     }
 
+    /* Check SQ has enough room for max possible SQEs per stripe */
+    {
+        int sq_slots = io_uring_sq_space_left(&sched->ring);
+        if (sq_slots < sched->ndisks) {
+            fprintf(stderr, "tv_read: insufficient SQ slots (%d < %d), submitting first\n",
+                    sq_slots, sched->ndisks);
+            io_uring_submit(&sched->ring);
+        }
+    }
+
     uint8_t *dst = (uint8_t *)buf;
     uint64_t pos = 0;
 
@@ -484,19 +534,31 @@ void tv_sched_destroy(TV_SCHED *sched) {
                 }
             }
         } else {
-            /* Timeout or error — force drain */
-            fprintf(stderr, "tv_sched_destroy: timeout waiting for %d inflight CQEs\n",
-                    sched->inflight);
-            while (io_uring_peek_cqe(&sched->ring, &cqe) == 0 && cqe) {
-                int bi = (int)(intptr_t)io_uring_cqe_get_data(cqe);
-                io_uring_cqe_seen(&sched->ring, cqe);
-                if (bi >= 0 && bi < TV_BUF_COUNT && sched->sbuf[bi].in_flight) {
-                    sched->sbuf[bi].cqes_pending--;
-                    if (sched->sbuf[bi].cqes_pending <= 0) {
-                        sched->sbuf[bi].in_flight = 0;
-                        sched->inflight--;
+            /* Timeout — force drain with blocking wait */
+            fprintf(stderr, "tv_sched_destroy: timeout waiting for %d inflight CQEs, "
+                    "waiting up to 60s more\n", sched->inflight);
+            int extra = 0;
+            while (sched->inflight > 0 && extra < 60) {
+                struct __kernel_timespec wait_ts = { .tv_sec = 1, .tv_nsec = 0 };
+                int r = io_uring_wait_cqe_timeout(&sched->ring, &cqe, &wait_ts);
+                if (r == 0 && cqe) {
+                    int bi = (int)(intptr_t)io_uring_cqe_get_data(cqe);
+                    io_uring_cqe_seen(&sched->ring, cqe);
+                    if (bi >= 0 && bi < TV_BUF_COUNT && sched->sbuf[bi].in_flight) {
+                        sched->sbuf[bi].cqes_pending--;
+                        if (sched->sbuf[bi].cqes_pending <= 0) {
+                            sched->sbuf[bi].in_flight = 0;
+                            sched->inflight--;
+                        }
                     }
+                    extra = 0;
+                } else {
+                    extra++;
                 }
+            }
+            if (sched->inflight > 0) {
+                fprintf(stderr, "tv_sched_destroy: WARNING: %d CQEs still in flight, "
+                        "proceeding with teardown\n", sched->inflight);
             }
             break;
         }
