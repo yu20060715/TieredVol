@@ -42,6 +42,12 @@ Application
 
 The current implementation assumes static striping weights generated during initialization. Changing weights invalidates all logical-to-physical mappings unless data migration is performed.
 
+### Known Limitations
+
+- **Data size must be a multiple of stripe_size**: `tv_write()` and `tv_read()` require the data length to be an exact multiple of the stripe size. Partial stripes write only to disk 0, causing undefined read results.
+- **Equal-capacity disks**: when multiple disks have identical capacity, they are grouped into a single segment and share I/O proportionally to their weights.
+- **Sequential write only**: random writes require read-modify-write which is not yet implemented.
+
 > Under large sequential workloads with sufficient queue depth, aggregate throughput **may approach** the sum of individual sequential bandwidths. Actual results depend on CPU, PCIe bandwidth, filesystem overhead, and I/O pattern.
 
 ---

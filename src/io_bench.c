@@ -244,7 +244,7 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
     }
 
     uint8_t *buf = NULL;
-    if (posix_memalign((void **)&buf, 512, (size_t)sched->stripe_size) != 0) {
+    if (posix_memalign((void **)&buf, TV_ALLOC_ALIGNMENT, (size_t)sched->stripe_size) != 0) {
         fprintf(stderr, "Error: cannot allocate buffer\n");
         return TV_ERR;
     }

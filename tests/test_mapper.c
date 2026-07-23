@@ -109,6 +109,29 @@ static void test_map_dual_seg_second(void) {
     check(map.disk == 1, "segment 1 offset 0 → disk_index[0]=1 (sda)");
 }
 
+static void test_map_null_meta(void) {
+    printf("\n[TEST] tv_map_logical NULL meta\n");
+    TV_MAP map = tv_map_logical(0, NULL);
+    check(map.disk == -1, "NULL meta returns error");
+}
+
+static void test_map_out_of_range(void) {
+    printf("\n[TEST] tv_map_logical out-of-range offset\n");
+    TV_METADATA m = single_seg_meta();
+    TV_MAP map = tv_map_logical(m.segments[0].logical_end + 1, &m);
+    check(map.disk == -1, "out-of-range offset returns error");
+}
+
+static void test_map_offset_eq_stripe(void) {
+    printf("\n[TEST] tv_map_logical offset == stripe_size\n");
+    TV_METADATA m = single_seg_meta();
+    /* offset = stripe_size → start of second stripe → disk 0, physical = 1 * weight[0] * chunk */
+    TV_MAP map = tv_map_logical(m.segments[0].stripe_size, &m);
+    check(map.disk == 0, "offset == stripe_size maps to disk 0");
+    uint64_t expected_off = (uint64_t)m.segments[0].weight[0] * m.chunk_size;
+    check(map.offset == expected_off, "physical offset = weight * chunk for stripe 1");
+}
+
 int main(void) {
     printf("=== TieredVol Mapper Unit Tests ===\n");
 
@@ -117,6 +140,9 @@ int main(void) {
     test_map_single_seg_boundary();
     test_map_dual_seg_first();
     test_map_dual_seg_second();
+    test_map_null_meta();
+    test_map_out_of_range();
+    test_map_offset_eq_stripe();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

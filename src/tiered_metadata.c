@@ -126,14 +126,7 @@ int tv_metadata_load(TV_METADATA *meta, const char *path) {
                 char *t = strtok(val, ",");
                 int j = 0;
                 while (t && j < TV_MAX_DISKS) {
-                    uint32_t d = (uint32_t)strtoul(t, NULL, 10);
-                    if (d >= meta->disk_count) {
-                        fprintf(stderr, "metadata: seg%lu disk index %u >= disk_count %u\n",
-                                idx, d, meta->disk_count);
-                        fclose(f);
-                        return TV_ERR;
-                    }
-                    seg->disk_index[j++] = d;
+                    seg->disk_index[j++] = (uint32_t)strtoul(t, NULL, 10);
                     t = strtok(NULL, ",");
                 }
             } else if (strcmp(endp, "_weight") == 0) {
@@ -148,5 +141,18 @@ int tv_metadata_load(TV_METADATA *meta, const char *path) {
     }
 
     fclose(f);
+
+    /* Validate disk indices after all lines are parsed (allows any parse order) */
+    for (unsigned long si = 0; si < meta->segment_count; si++) {
+        TV_SEGMENT *seg = &meta->segments[si];
+        for (uint32_t j = 0; j < seg->disk_count; j++) {
+            if (seg->disk_index[j] >= meta->disk_count) {
+                fprintf(stderr, "metadata: seg%lu disk index %u >= disk_count %u\n",
+                        si, seg->disk_index[j], meta->disk_count);
+                return TV_ERR;
+            }
+        }
+    }
+
     return 0;
 }

@@ -20,6 +20,8 @@ TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {
 
     TV_SEGMENT *seg = &meta->segments[seg_idx];
 
+    if (seg->disk_count == 0 || seg->disk_count > TV_MAX_DISKS) return err;
+
     uint64_t stripe_no = (logical - seg->logical_begin) / seg->stripe_size;
     uint64_t offset_in = (logical - seg->logical_begin) % seg->stripe_size;
 
@@ -31,13 +33,15 @@ TV_MAP tv_map_logical(uint64_t logical, TV_METADATA *meta) {
     }
 
     /* Find which disk this offset falls into */
-    int disk_idx = 0;
+    int disk_idx = -1;
     for (int i = 0; i < (int)seg->disk_count; i++) {
         if (offset_in >= boundary[i] && offset_in < boundary[i + 1]) {
             disk_idx = i;
             break;
         }
     }
+
+    if (disk_idx < 0) return err;
 
     TV_MAP map;
     map.disk = (int)seg->disk_index[disk_idx];

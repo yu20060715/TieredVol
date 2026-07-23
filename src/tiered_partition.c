@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include "tiered_types.h"
 
@@ -72,6 +73,19 @@ int tv_build_segments(TV_DISK *disks, int ndisks, TV_SEGMENT *segs, int *nsegs) 
 
         prev_boundary = boundary;
         seg_count++;
+    }
+
+    /* Warn if stripe sizes differ across segments (expected for unequal capacities) */
+    if (seg_count > 1) {
+        uint64_t ref_stripe = segs[0].stripe_size;
+        for (int i = 1; i < seg_count; i++) {
+            if (segs[i].stripe_size != ref_stripe) {
+                fprintf(stderr, "tv: note: stripe sizes differ across segments "
+                        "(seg0=%lu, seg%d=%lu) — expected for unequal capacities\n",
+                        (unsigned long)ref_stripe, i, (unsigned long)segs[i].stripe_size);
+                break;
+            }
+        }
     }
 
     *nsegs = seg_count;

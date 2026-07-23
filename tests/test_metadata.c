@@ -125,6 +125,35 @@ static void test_save_load_multi_seg(void) {
     unlink(path);
 }
 
+static void test_load_long_disk_name(void) {
+    printf("\n[TEST] tv_metadata_save/load with long disk name\n");
+    const char *path = "/tmp/.tv_test_meta_longname.bin";
+    TV_METADATA orig;
+    memset(&orig, 0, sizeof(orig));
+    orig.version = 1;
+    orig.chunk_size = 1024 * 1024;
+    orig.disk_count = 1;
+    /* Fill disk name with 63 chars (max is TV_MAX_NAME=64 including null) */
+    memset(orig.disk_names[0], 'a', 63);
+    orig.disk_names[0][63] = '\0';
+    orig.segment_count = 1;
+    orig.segments[0].logical_begin = 0;
+    orig.segments[0].logical_end = 10ULL * 1024 * 1024 * 1024;
+    orig.segments[0].disk_count = 1;
+    orig.segments[0].weight[0] = 1;
+    orig.segments[0].stripe_size = 1024 * 1024;
+
+    int ret = tv_metadata_save(&orig, path);
+    check(ret == 0, "save with long name succeeded");
+
+    TV_METADATA loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    ret = tv_metadata_load(&loaded, path);
+    check(ret == 0, "load with long name succeeded");
+    check(strcmp(loaded.disk_names[0], orig.disk_names[0]) == 0, "long name preserved");
+    unlink(path);
+}
+
 int main(void) {
     printf("=== TieredVol Metadata Unit Tests ===\n");
 
@@ -132,6 +161,7 @@ int main(void) {
     test_load_nonexistent();
     test_save_corner();
     test_save_load_multi_seg();
+    test_load_long_disk_name();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
