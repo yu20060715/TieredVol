@@ -76,16 +76,16 @@ int tv_build_segments(TV_DISK *disks, int ndisks, TV_SEGMENT *segs, int *nsegs) 
         seg_count++;
     }
 
-    /* Warn if stripe sizes differ across segments (expected for unequal capacities) */
+    /* Error if stripe sizes differ across segments (causes data loss in flush_submit_io) */
     if (seg_count > 1) {
         uint64_t ref_stripe = segs[0].stripe_size;
         for (int i = 1; i < seg_count; i++) {
             if (segs[i].stripe_size != ref_stripe) {
-                fprintf(stderr, "tv: WARNING: stripe sizes differ across segments "
-                        "(seg0=%lu, seg%d=%lu) — unequal capacities may cause "
-                        "incorrect offset calculations in flush_submit_io\n",
+                fprintf(stderr, "Error: stripe sizes differ across segments "
+                        "(seg0=%lu, seg%d=%lu) — cannot create volume with "
+                        "unequal disk capacities in scheduler mode\n",
                         (unsigned long)ref_stripe, i, (unsigned long)segs[i].stripe_size);
-                break;
+                return TV_ERR;
             }
         }
     }

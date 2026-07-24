@@ -323,10 +323,11 @@ int tv_flush(TV_SCHED *sched) {
     }
 
     /* Wait for ALL in-flight I/Os */
+    int flush_errors = 0;
     while (sched->inflight > 0) {
         if (g_shutdown_requested) return TV_ERR;
         /* Drain any already-completed CQEs before blocking wait */
-        reap_completed(sched);
+        if (reap_completed(sched) < 0) flush_errors = 1;
         if (sched->inflight == 0) break;
         struct io_uring_cqe *cqe = NULL;
         struct __kernel_timespec ts = { .tv_sec = TV_CQE_TIMEOUT_SEC, .tv_nsec = 0 };
@@ -408,6 +409,7 @@ process_cqe:
         io_uring_cqe_seen(&sched->ring, cqe);
         if (res < 0 && res != -ETIME) {
             fprintf(stderr, "tv_flush: I/O error res=%d\n", res);
+            flush_errors = 1;
             /* Still decrement inflight to avoid hang */
             if (buf_idx >= 0 && buf_idx < TV_BUF_COUNT && sched->sbuf[buf_idx].in_flight) {
                 sched->sbuf[buf_idx].cqes_pending--;
@@ -426,7 +428,7 @@ process_cqe:
         }
     }
 
-    return 0;
+    return flush_errors ? TV_ERR : 0;
 }
 
 int tv_sched_seek(TV_SCHED *sched, uint64_t offset) {

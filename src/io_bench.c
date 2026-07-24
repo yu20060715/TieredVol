@@ -64,6 +64,8 @@ int do_warmup_exec(TV_SCHED *sched, TV_METADATA *meta) {
     uint64_t warmup_size = vol_size * 2 / 10;
     if (warmup_size > 4ULL * 1024 * 1024 * 1024)
         warmup_size = 4ULL * 1024 * 1024 * 1024;
+    /* Round down to stripe-aligned boundary */
+    warmup_size = warmup_size / sched->stripe_size * sched->stripe_size;
     uint8_t *wbuf = malloc((size_t)sched->stripe_size);
     if (!wbuf) return TV_ERR;
     memset(wbuf, 0xAB, (size_t)sched->stripe_size);
