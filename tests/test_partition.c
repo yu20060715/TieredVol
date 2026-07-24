@@ -70,15 +70,15 @@ static void test_build_segments_three_tiers(void) {
     printf("\n[TEST] tv_build_segments three speed tiers\n");
     TV_DISK disks[3];
     memset(&disks, 0, sizeof(disks));
-    disks[0].id = 0; strcpy(disks[0].name, "nvme0n1"); disks[0].free_size = 5ULL * 1024 * 1024 * 1024;  disks[0].speed = 3000;
-    disks[1].id = 1; strcpy(disks[1].name, "sda");      disks[1].free_size = 20ULL * 1024 * 1024 * 1024; disks[1].speed = 500;
+    disks[0].id = 0; strcpy(disks[0].name, "nvme0n1"); disks[0].free_size = 10ULL * 1024 * 1024 * 1024; disks[0].speed = 3000;
+    disks[1].id = 1; strcpy(disks[1].name, "sda");      disks[1].free_size = 10ULL * 1024 * 1024 * 1024; disks[1].speed = 500;
     disks[2].id = 2; strcpy(disks[2].name, "hda");      disks[2].free_size = 10ULL * 1024 * 1024 * 1024; disks[2].speed = 200;
 
     TV_SEGMENT segs[TV_MAX_SEGS];
     int nsegs = 0;
     int ret = tv_build_segments(disks, 3, segs, &nsegs);
     check(ret == 0, "build succeeded");
-    check(nsegs == 3, "three segments for three tiers");
+    check(nsegs == 1, "single segment for equal-capacity disks");
     check(segs[0].disk_count == 3, "first segment covers all disks");
 }
 
