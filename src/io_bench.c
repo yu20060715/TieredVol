@@ -66,8 +66,9 @@ int do_warmup_exec(TV_SCHED *sched, TV_METADATA *meta) {
         warmup_size = 4ULL * 1024 * 1024 * 1024;
     /* Round down to stripe-aligned boundary */
     warmup_size = warmup_size / sched->stripe_size * sched->stripe_size;
-    uint8_t *wbuf = malloc((size_t)sched->stripe_size);
-    if (!wbuf) return TV_ERR;
+    uint8_t *wbuf = NULL;
+    if (posix_memalign((void **)&wbuf, 512, (size_t)sched->stripe_size) != 0)
+        return TV_ERR;
     memset(wbuf, 0xAB, (size_t)sched->stripe_size);
     fprintf(stderr, "Warming up SLC cache (%luMB, 20%% of volume)...\n",
             (unsigned long)(warmup_size / (1024 * 1024)));
@@ -101,6 +102,10 @@ int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA *meta)
         do_warmup_exec(sched, meta);
     }
 
+    if (meta->segment_count == 0) {
+        fprintf(stderr, "Error: no segments defined\n");
+        return TV_ERR;
+    }
     uint64_t vol_size = meta->segments[meta->segment_count - 1].logical_end;
     uint64_t remaining = vol_size - sched->sbuf_logical;
     if (size > remaining) {
@@ -240,6 +245,10 @@ int cmd_bench_all(TV_METADATA *meta, int use_raw) {
 }
 
 int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
+    if (meta->segment_count == 0) {
+        fprintf(stderr, "Error: no segments defined\n");
+        return TV_ERR;
+    }
     uint64_t vol_size = meta->segments[meta->segment_count - 1].logical_end;
     uint64_t remaining = vol_size - sched->sbuf_logical;
     if (size > remaining) {
