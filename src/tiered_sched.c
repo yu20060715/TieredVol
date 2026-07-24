@@ -88,6 +88,11 @@ static int reap_completed(TV_SCHED *sched) {
 
 int tv_write(TV_SCHED *sched, const void *buf, uint64_t len) {
     if (!sched || !buf || len == 0) return TV_ERR;
+    if (len % sched->stripe_size != 0) {
+        fprintf(stderr, "tv_write: len (%lu) not aligned to stripe_size (%lu)\n",
+                (unsigned long)len, (unsigned long)sched->stripe_size);
+        return TV_ERR;
+    }
 
     const uint8_t *src = (const uint8_t *)buf;
     uint64_t pos = 0;
@@ -439,6 +444,16 @@ int tv_sched_seek(TV_SCHED *sched, uint64_t offset) {
 
 int tv_read(TV_SCHED *sched, void *buf, uint64_t len, uint64_t offset) {
     if (!sched || !buf || len == 0) return TV_ERR;
+    if (len % sched->stripe_size != 0) {
+        fprintf(stderr, "tv_read: len (%lu) not aligned to stripe_size (%lu)\n",
+                (unsigned long)len, (unsigned long)sched->stripe_size);
+        return TV_ERR;
+    }
+    if (offset % sched->stripe_size != 0) {
+        fprintf(stderr, "tv_read: offset (%lu) not aligned to stripe_size (%lu)\n",
+                (unsigned long)offset, (unsigned long)sched->stripe_size);
+        return TV_ERR;
+    }
 
     /* Flush any pending writes first */
     if (tv_flush(sched) < 0) return TV_ERR;

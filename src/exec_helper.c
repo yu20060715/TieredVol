@@ -49,6 +49,8 @@ int tv_exec_sudo(char *const argv[], int quiet) {
         char *sudo_argv[64];
         sudo_argv[i++] = "sudo";
         for (char *const *a = argv; *a && i < 62; a++) sudo_argv[i++] = *a;
+        if (i >= 62)
+            fprintf(stderr, "tv_exec_sudo: warning: args truncated (max 61)\n");
         sudo_argv[i] = NULL;
         execvp("sudo", sudo_argv);
         _exit(127);

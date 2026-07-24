@@ -71,8 +71,12 @@ int load_all_disk_info(disk_t *out, int max) {
 
 void find_mount_for_disk(const char *disk, char *mp, size_t mp_size) {
     mp[0] = 0;
-    char dev_pattern[64];
-    snprintf(dev_pattern, sizeof(dev_pattern), "/dev/%s ", disk);
+    char dev_pattern[128];
+    /* If disk already starts with /dev/, use it as-is; otherwise prepend /dev/ */
+    if (strncmp(disk, "/dev/", 5) == 0)
+        snprintf(dev_pattern, sizeof(dev_pattern), "%s ", disk);
+    else
+        snprintf(dev_pattern, sizeof(dev_pattern), "/dev/%s ", disk);
     FILE *fp = fopen("/proc/mounts", "r");
     if (fp) {
         char mnt_line[512];

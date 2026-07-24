@@ -110,6 +110,13 @@ int cmd_bench_one(TV_SCHED *sched, uint64_t size, int warmup, TV_METADATA *meta)
         fprintf(stderr, "Warning: no space left in volume, skipping bench\n");
         return 0;
     }
+    /* Round down to stripe-aligned boundary to avoid partial stripe writes */
+    size = size / sched->stripe_size * sched->stripe_size;
+    if (size == 0) {
+        fprintf(stderr, "Warning: bench size smaller than stripe_size (%lu MB), skipping\n",
+                (unsigned long)(sched->stripe_size / 1048576));
+        return 0;
+    }
 
     uint8_t *buf = NULL;
     if (posix_memalign((void **)&buf, 4096, (size_t)(sched->stripe_size)) != 0) {
@@ -242,6 +249,13 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
         fprintf(stderr, "Warning: no space left in volume, skipping read bench\n");
         return 0;
     }
+    /* Round down to stripe-aligned boundary to avoid partial stripe reads */
+    size = size / sched->stripe_size * sched->stripe_size;
+    if (size == 0) {
+        fprintf(stderr, "Warning: read bench size smaller than stripe_size (%lu MB), skipping\n",
+                (unsigned long)(sched->stripe_size / 1048576));
+        return 0;
+    }
 
     uint8_t *buf = NULL;
     if (posix_memalign((void **)&buf, TV_ALLOC_ALIGNMENT, (size_t)sched->stripe_size) != 0) {
@@ -272,7 +286,9 @@ int cmd_bench_read_one(TV_SCHED *sched, uint64_t size, TV_METADATA *meta) {
     }
     if (tv_flush(sched) < 0) {
         fprintf(stderr, "Warning: flush failed during read prep, cleaning ring\n");
-        /* Drain any orphaned CQEs from the ring */
+        /* Manual ring reset: tv_sched_destroy is too aggressive (closes fds),
+         * and no lightweight reset API exists. Drain orphaned CQEs and
+         * zero sbuf state so subsequent reads start clean. */
         struct io_uring_cqe *tmp;
         while (io_uring_peek_cqe(&sched->ring, &tmp) == 0 && tmp)
             io_uring_cqe_seen(&sched->ring, tmp);
